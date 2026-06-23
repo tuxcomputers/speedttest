@@ -1,0 +1,55 @@
+{
+    "type": "result",
+    "timestamp": "2026-06-23T08:25:47Z",
+    "ping": {
+        "jitter": 0.242,
+        "latency": 1.999,
+        "low": 1.975,
+        "high": 2.820
+    },
+    "download": {
+        "bandwidth": 67103288,
+        "bytes": 391520912,
+        "elapsed": 5808,
+        "latency": {
+            "iqm": 10.371,
+            "low": 2.996,
+            "high": 17.144,
+            "jitter": 0.645
+        }
+    },
+    "upload": {
+        "bandwidth": 5879286,
+        "bytes": 46968776,
+        "elapsed": 7925,
+        "latency": {
+            "iqm": 7.678,
+            "low": 2.036,
+            "high": 463.000,
+            "jitter": 19.062
+        }
+    },
+    "packetLoss": 0,
+    "isp": "Exetel",
+    "interface": {
+        "internalIp": "192.168.0.20",
+        "name": "end0",
+        "macAddr": "2C:CF:67:A9:09:7D",
+        "isVpn": false,
+        "externalIp": "115.186.229.12"
+    },
+    "server": {
+        "id": 54994,
+        "host": "spd01-bne.au.superloop.com",
+        "port": 8080,
+        "name": "Superloop Australia Pty Ltd",
+        "location": "Brisbane",
+        "country": "Australia",
+        "ip": "223.27.66.18"
+    },
+    "result": {
+        "id": "c0c8f53a-02b0-4861-94e2-1be4b9bd68be",
+        "url": "https://www.speedtest.net/result/c/c0c8f53a-02b0-4861-94e2-1be4b9bd68be",
+        "persisted": true
+    }
+}

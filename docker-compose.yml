@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: speedtest
+      POSTGRES_USER: speedtest
+      POSTGRES_PASSWORD: speedtest
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d
+
+  speedtest:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: speedtest
+      DB_USER: speedtest
+      DB_PASSWORD: speedtest
+
+volumes:
+  pgdata:
