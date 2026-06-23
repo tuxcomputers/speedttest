@@ -15,27 +15,34 @@ services:
   speedtest:
     build: .
     restart: unless-stopped
-    depends_on:
-      - db
     environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: speedtest
-      DB_USER: speedtest
-      DB_PASSWORD: speedtest
+      SQLITE_PATH: /data/speedtest.db
+    volumes:
+      - sqlite_data:/data
 
   connectivity:
     build: .
     restart: unless-stopped
-    depends_on:
-      - db
     environment:
+      SQLITE_PATH: /data/speedtest.db
+    volumes:
+      - sqlite_data:/data
+    command: ["python", "connectivity_monitor.py"]
+
+  data_sync:
+    build: .
+    restart: unless-stopped
+    environment:
+      SQLITE_PATH: /data/speedtest.db
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: speedtest
       DB_USER: speedtest
       DB_PASSWORD: speedtest
-    command: ["python", "connectivity_monitor.py"]
+    volumes:
+      - sqlite_data:/data
+    command: ["python", "data_sync.py"]
 
 volumes:
   pgdata:
+  sqlite_data:

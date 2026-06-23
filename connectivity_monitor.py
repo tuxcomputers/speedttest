@@ -1,48 +1,11 @@
-import os
 import socket
 import time
 from datetime import datetime, timezone
-import psycopg2
-from psycopg2 import OperationalError
+import local_db
 
-NORMAL_INTERVAL = 10   # seconds between checks when connected
-FAST_INTERVAL = 1      # seconds between checks when disconnected
-GAP_THRESHOLD = 20     # gap larger than this at startup → recorded as unknown
-
-
-def get_connection():
-    return psycopg2.connect(
-        host=os.environ['DB_HOST'],
-        port=os.environ.get('DB_PORT', 5432),
-        dbname=os.environ['DB_NAME'],
-        user=os.environ['DB_USER'],
-        password=os.environ['DB_PASSWORD']
-    )
-
-
-def wait_for_db():
-    while True:
-        try:
-            conn = get_connection()
-            conn.close()
-            return
-        except OperationalError:
-            print("Waiting for database...")
-            time.sleep(5)
-
-
-def get_or_create_host():
-    hostname = socket.gethostname()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO host (hostname) VALUES (%s) ON CONFLICT (hostname) DO UPDATE SET hostname = EXCLUDED.hostname RETURNING host_id",
-        (hostname,)
-    )
-    host_id = cursor.fetchone()[0]
-    conn.commit()
-    conn.close()
-    return host_id
+NORMAL_INTERVAL = 10
+FAST_INTERVAL = 1
+GAP_THRESHOLD = 20
 
 
 def check_internet():
@@ -60,78 +23,78 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def get_last_checked(host_id):
+def now_str():
+    return now_utc().isoformat()
+
+
+def get_last_connectivity_check(host_id):
     try:
-        conn = get_connection()
+        conn = local_db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT last_checked FROM connectivity WHERE host_id = %s", (host_id,))
+        cursor.execute("SELECT last_connectivity_check FROM network_status WHERE host_id = ?", (host_id,))
         row = cursor.fetchone()
         conn.close()
-        return row[0] if row else None
+        if row and row[0]:
+            return datetime.fromisoformat(row[0])
+        return None
     except Exception:
         return None
 
 
 def update_status(host_id, is_connected):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO connectivity (host_id, last_checked, is_connected)
-        VALUES (%s, NOW(), %s)
+    conn = local_db.get_connection()
+    conn.execute("""
+        INSERT INTO network_status (host_id, last_connectivity_check, is_connected)
+        VALUES (?, ?, ?)
         ON CONFLICT (host_id) DO UPDATE SET
-            last_checked = EXCLUDED.last_checked,
-            is_connected = EXCLUDED.is_connected
-    """, (host_id, is_connected))
+            last_connectivity_check = excluded.last_connectivity_check,
+            is_connected = excluded.is_connected
+    """, (host_id, now_str(), 1 if is_connected else 0))
     conn.commit()
     conn.close()
 
 
 def open_outage(host_id, start_time, status='outage'):
-    conn = get_connection()
+    conn = local_db.get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO outage (host_id, start_time, status) VALUES (%s, %s, %s) RETURNING outage_id",
-        (host_id, start_time, status)
+        "INSERT INTO outage (host_id, start_time, status) VALUES (?, ?, ?)",
+        (host_id, start_time.isoformat(), status)
     )
-    outage_id = cursor.fetchone()[0]
+    outage_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return outage_id
 
 
 def close_outage(outage_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE outages SET end_time = NOW() WHERE outage_id = %s",
-        (outage_id,)
-    )
+    conn = local_db.get_connection()
+    conn.execute("UPDATE outage SET end_time = ? WHERE outage_id = ?", (now_str(), outage_id))
     conn.commit()
     conn.close()
 
 
 def record_unknown_gap(host_id, start_time, end_time):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO outage (host_id, start_time, end_time, status) VALUES (%s, %s, %s, 'unknown')",
-        (host_id, start_time, end_time)
+    conn = local_db.get_connection()
+    conn.execute(
+        "INSERT INTO outage (host_id, start_time, end_time, status) VALUES (?, ?, ?, 'unknown')",
+        (host_id, start_time.isoformat(), end_time.isoformat())
     )
     conn.commit()
     conn.close()
 
 
-wait_for_db()
-host_id = get_or_create_host()
+local_db.init_db()
+host_id = local_db.get_or_create_host()
 
 # Check for monitoring gap since last run
-last_checked = get_last_checked(host_id)
+last_check = get_last_connectivity_check(host_id)
 startup_time = now_utc()
-if last_checked is not None:
-    gap_seconds = (startup_time - last_checked).total_seconds()
+if last_check is not None:
+    gap_seconds = (startup_time - last_check).total_seconds()
     if gap_seconds > GAP_THRESHOLD:
-        record_unknown_gap(host_id, last_checked, startup_time)
-        print(f"Recorded unknown gap of {gap_seconds:.0f}s ({last_checked} to {startup_time})")
+        record_unknown_gap(host_id, last_check, startup_time)
+        print(f"Recorded unknown gap of {gap_seconds:.0f}s ({last_check} to {startup_time})")
 
 outage_id = None
 
@@ -141,7 +104,7 @@ while True:
     try:
         update_status(host_id, connected)
     except Exception as e:
-        print(f"Failed to update connectivity status: {e}")
+        print(f"Failed to update network status: {e}")
 
     if connected:
         if outage_id is not None:
