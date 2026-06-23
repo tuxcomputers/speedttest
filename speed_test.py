@@ -2,6 +2,7 @@ import subprocess
 import json
 import math
 import os
+import socket
 import time
 import psycopg2
 from psycopg2 import OperationalError
@@ -17,6 +18,20 @@ def get_connection():
         user=os.environ['DB_USER'],
         password=os.environ['DB_PASSWORD']
     )
+
+
+def get_or_create_host():
+    hostname = socket.gethostname()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO host (hostname) VALUES (%s) ON CONFLICT (hostname) DO UPDATE SET hostname = EXCLUDED.hostname RETURNING host_id",
+        (hostname,)
+    )
+    host_id = cursor.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return host_id
 
 
 def sleep_until_next_run():
@@ -42,13 +57,13 @@ def run_speedtest():
     return json.loads(result.stdout)
 
 
-def save_results(data):
+def save_results(data, host_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
-        'INSERT INTO tests (timestamp, isp, packet_loss, result_id, result_url) VALUES (%s, %s, %s, %s, %s) RETURNING test_id',
-        (data['timestamp'], data['isp'], data['packetLoss'],
+        'INSERT INTO test (host_id, timestamp, isp, packet_loss, result_id, result_url) VALUES (%s, %s, %s, %s, %s, %s) RETURNING test_id',
+        (host_id, data['timestamp'], data['isp'], data['packetLoss'],
          data['result']['id'], data['result']['url'])
     )
     test_id = cursor.fetchone()[0]
@@ -79,9 +94,13 @@ def save_results(data):
 
 
 wait_for_db()
+host_id = get_or_create_host()
 
 while True:
     sleep_until_next_run()
-    data = run_speedtest()
-    test_id = save_results(data)
-    print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
+    try:
+        data = run_speedtest()
+        test_id = save_results(data, host_id)
+        print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
+    except Exception as e:
+        print(f"Test failed, skipping: {e}")

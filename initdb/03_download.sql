@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS download (
     latency_low REAL,
     latency_high REAL,
     latency_jitter REAL,
-    FOREIGN KEY (test_id) REFERENCES tests(test_id)
+    FOREIGN KEY (test_id) REFERENCES test(test_id)
 );

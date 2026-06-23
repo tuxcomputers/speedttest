@@ -8,6 +8,6 @@ RUN apt-get update && apt-get install -y curl && \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY speed_test.py .
+COPY *.py .
 
 CMD ["python", "speed_test.py"]

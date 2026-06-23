@@ -5,5 +5,5 @@ CREATE TABLE IF NOT EXISTS ping (
     jitter REAL,
     low REAL,
     high REAL,
-    FOREIGN KEY (test_id) REFERENCES tests(test_id)
+    FOREIGN KEY (test_id) REFERENCES test(test_id)
 );

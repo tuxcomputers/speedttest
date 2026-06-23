@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS server (
     location TEXT,
     country TEXT,
     ip TEXT,
-    FOREIGN KEY (test_id) REFERENCES tests(test_id)
+    FOREIGN KEY (test_id) REFERENCES test(test_id)
 );

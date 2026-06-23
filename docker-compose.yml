@@ -24,5 +24,18 @@ services:
       DB_USER: speedtest
       DB_PASSWORD: speedtest
 
+  connectivity:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: speedtest
+      DB_USER: speedtest
+      DB_PASSWORD: speedtest
+    command: ["python", "connectivity_monitor.py"]
+
 volumes:
   pgdata:
