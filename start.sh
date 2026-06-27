@@ -10,11 +10,13 @@ if [[ ! -f ".env" ]]; then
     echo "Creating .env..."
     NIC=$(ip route show default | awk '/default/ {print $5}')
     HOST_HASH=$(cat /sys/class/net/${NIC}/address | sha256sum | cut -c1-16)
+    TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
     cat > .env <<EOF
 HOST_HOSTNAME=$(hostname)
 HOST_HASH=${HOST_HASH}
+TIMEZONE=${TIMEZONE}
 EOF
-    echo ".env created with hostname=$(hostname) and hash=${HOST_HASH}"
+    echo ".env created with hostname=$(hostname), hash=${HOST_HASH}, timezone=${TIMEZONE}"
 fi
 
 # Check if image needs rebuilding by hashing all build-relevant files
