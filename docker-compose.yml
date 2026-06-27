@@ -13,7 +13,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d
 
-  speedtest:
+  app:
     build: .
     restart: unless-stopped
     environment:
@@ -28,40 +28,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - sqlite_data:/data
-
-  connectivity:
-    build: .
-    restart: unless-stopped
-    environment:
-      SQLITE_PATH: /data/speedtest.db
-      HOST_HOSTNAME: ${HOST_HOSTNAME}
-      HOST_HASH: ${HOST_HASH}
-      TZ: ${TIMEZONE:-UTC}
-      DB_HOST: ${DB_HOST:-}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-}
-      DB_USER: ${DB_USER:-}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-    volumes:
-      - sqlite_data:/data
-    command: ["python", "connectivity_monitor.py"]
-
-  data_sync:
-    build: .
-    restart: unless-stopped
-    environment:
-      SQLITE_PATH: /data/speedtest.db
-      HOST_HOSTNAME: ${HOST_HOSTNAME}
-      HOST_HASH: ${HOST_HASH}
-      TZ: ${TIMEZONE:-UTC}
-      DB_HOST: ${DB_HOST:-}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-}
-      DB_USER: ${DB_USER:-}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-    volumes:
-      - sqlite_data:/data
-    command: ["python", "data_sync.py"]
+      - .:/app
 
 volumes:
   pgdata:

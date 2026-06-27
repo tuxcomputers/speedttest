@@ -113,15 +113,15 @@ fi
 # ── Image rebuild check ───────────────────────────────────────────────────────
 
 hash_file="/tmp/speedttest-image.hash"
-current_hash=$(cat Dockerfile requirements.txt *.py | md5sum | cut -d' ' -f1)
+current_hash=$(cat Dockerfile requirements.txt | md5sum | cut -d' ' -f1)
 stored_hash=""
 [[ -f "${hash_file}" ]] && stored_hash=$(cat "${hash_file}")
 
-if [[ "${current_hash}" != "${stored_hash}" ]] || ! docker image inspect speedttest-speedtest &>/dev/null; then
+if [[ "${current_hash}" != "${stored_hash}" ]] || ! docker image inspect speedttest-app &>/dev/null; then
     echo "Image out of date or missing — rebuilding..."
     docker compose up --build -d
     echo "${current_hash}" > "${hash_file}"
 else
-    echo "Image up to date — starting..."
-    docker compose up -d
+    echo "Restarting containers to pick up latest code..."
+    docker compose restart
 fi

@@ -3,8 +3,6 @@ import time
 from datetime import datetime, timezone
 import local_db
 
-NORMAL_INTERVAL = 10
-FAST_INTERVAL = 1
 GAP_THRESHOLD = 20
 
 
@@ -57,6 +55,18 @@ def get_last_connectivity_check(host_id):
         return None
 
 
+def get_open_outage(host_id):
+    conn = local_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT outage_id FROM outage WHERE host_id = ? AND end_time IS NULL ORDER BY start_time DESC LIMIT 1",
+        (host_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row['outage_id'] if row else None
+
+
 def update_status(host_id, is_connected):
     conn = local_db.get_connection()
     conn.execute("""
@@ -103,7 +113,6 @@ def record_unknown_gap(host_id, start_time, end_time):
 local_db.init_db()
 host_id = local_db.get_or_create_host()
 
-# Check for monitoring gap since last run
 last_check = get_last_connectivity_check(host_id)
 startup_time = now_utc()
 if last_check is not None:
@@ -112,33 +121,45 @@ if last_check is not None:
         record_unknown_gap(host_id, last_check, startup_time)
         print(f"Recorded unknown gap of {gap_seconds:.0f}s ({last_check} to {startup_time})")
 
-outage_id = None
+outage_id = get_open_outage(host_id)
+connected = check_internet(single_host=outage_id is not None)
 
-while True:
-    connected = check_internet(single_host=outage_id is not None)
+try:
+    update_status(host_id, connected)
+except Exception as e:
+    print(f"Failed to update network status: {e}")
 
-    try:
-        update_status(host_id, connected)
-    except Exception as e:
-        print(f"Failed to update network status: {e}")
-
-    if connected:
-        if outage_id is not None:
-            try:
-                close_outage(outage_id)
-                print(f"Internet restored, closed outage #{outage_id}")
-            except Exception as e:
-                print(f"Failed to close outage: {e}")
-            outage_id = None
-        interval = NORMAL_INTERVAL
+if connected:
+    if outage_id is not None:
+        try:
+            close_outage(outage_id)
+            print(f"Internet restored, closed outage #{outage_id}")
+        except Exception as e:
+            print(f"Failed to close outage: {e}")
+else:
+    if outage_id is None:
+        try:
+            outage_id = open_outage(host_id, now_utc())
+            print(f"Internet down, opened outage #{outage_id}")
+        except Exception as e:
+            print(f"Failed to open outage: {e}")
     else:
-        if outage_id is None:
-            try:
-                outage_id = open_outage(host_id, now_utc())
-                print(f"Internet down, opened outage #{outage_id}")
-            except Exception as e:
-                print(f"Failed to open outage: {e}")
-        print("No internet connection")
-        interval = FAST_INTERVAL
+        print("No internet connection (outage ongoing)")
 
-    time.sleep(interval)
+    # Network is down — loop at 1s until restored, then exit
+    while not connected:
+        time.sleep(1)
+        connected = check_internet(single_host=True)
+        try:
+            update_status(host_id, connected)
+        except Exception as e:
+            print(f"Failed to update network status: {e}")
+        if connected:
+            if outage_id is not None:
+                try:
+                    close_outage(outage_id)
+                    print(f"Internet restored, closed outage #{outage_id}")
+                except Exception as e:
+                    print(f"Failed to close outage: {e}")
+        else:
+            print("No internet connection (outage ongoing)")

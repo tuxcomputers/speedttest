@@ -8,6 +8,5 @@ RUN apt-get update && apt-get install -y curl sqlite3 && \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY *.py .
 
-CMD ["python", "speed_test.py"]
+CMD ["python", "supervisor.py"]

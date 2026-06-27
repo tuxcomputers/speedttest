@@ -1,17 +1,6 @@
 import subprocess
 import json
-import math
-import time
 import local_db
-
-INTERVAL_MINUTES = 5
-
-
-def sleep_until_next_run():
-    interval_seconds = INTERVAL_MINUTES * 60
-    now = time.time()
-    next_run = math.ceil(now / interval_seconds) * interval_seconds
-    time.sleep(next_run - now)
 
 
 def run_speedtest():
@@ -43,7 +32,7 @@ def save_results(data, host_id):
         lat = section['latency']
         cursor.execute(
             f'INSERT INTO {table} (test_id, bandwidth_mbps, bytes, elapsed, latency_iqm, latency_low, latency_high, latency_jitter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            (test_id, section['bandwidth'] * 8 / 1e6, section['bytes'], section['elapsed'],
+            (test_id, round(section['bandwidth'] * 8 / 1e6, 2), section['bytes'], section['elapsed'],
              lat['iqm'], lat['low'], lat['high'], lat['jitter'])
         )
 
@@ -61,11 +50,9 @@ def save_results(data, host_id):
 local_db.init_db()
 host_id = local_db.get_or_create_host()
 
-while True:
-    try:
-        data = run_speedtest()
-        test_id = save_results(data, host_id)
-        print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
-    except Exception as e:
-        print(f"Test failed, skipping: {e}")
-    sleep_until_next_run()
+try:
+    data = run_speedtest()
+    test_id = save_results(data, host_id)
+    print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
+except Exception as e:
+    print(f"Test failed: {e}")

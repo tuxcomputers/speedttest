@@ -1,22 +1,6 @@
-import math
 import os
-import time
 import psycopg2
 import local_db
-
-INTERVAL_MINUTES = 5
-SYNC_OFFSET_SECONDS = 30  # run 30s after each 5-minute mark, after speed test finishes
-
-
-def sleep_until_next_run():
-    interval_seconds = INTERVAL_MINUTES * 60
-    now = time.time()
-    adjusted = now - SYNC_OFFSET_SECONDS
-    next_base = math.ceil(adjusted / interval_seconds) * interval_seconds
-    next_run = next_base + SYNC_OFFSET_SECONDS
-    if next_run <= now:
-        next_run += interval_seconds
-    time.sleep(next_run - now)
 
 
 def has_db_config():
@@ -34,7 +18,6 @@ def get_pg_connection():
 
 
 def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash):
-    """Query PG by host_hash, insert if missing, keep local remote_id current."""
     if not host_hash:
         raise ValueError("host_hash is required to resolve remote host")
 
@@ -54,7 +37,6 @@ def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, h
         )
         pg_host_id = pg_cursor.fetchone()[0]
 
-    # Keep local remote_id in sync with what PG returned
     cursor = sqlite_conn.cursor()
     cursor.execute("SELECT remote_id FROM host WHERE host_id = ?", (local_host_id,))
     local_remote_id = cursor.fetchone()['remote_id']
@@ -97,7 +79,6 @@ def sync():
         pg_host_id = resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash)
         pg_conn.commit()
 
-        # Sync test records (and their children: ping, download, upload, server)
         cursor.execute("SELECT * FROM test WHERE synced_at IS NULL")
         tests = cursor.fetchall()
 
@@ -139,7 +120,6 @@ def sync():
             sqlite_conn.execute("UPDATE test SET synced_at = datetime('now') WHERE test_id = ?", (t['test_id'],))
             sqlite_conn.commit()
 
-        # Sync closed outage records only (open outages are synced once they complete)
         cursor.execute("SELECT * FROM outage WHERE synced_at IS NULL AND end_time IS NOT NULL")
         outages = cursor.fetchall()
 
@@ -152,7 +132,6 @@ def sync():
             sqlite_conn.execute("UPDATE outage SET synced_at = datetime('now') WHERE outage_id = ?", (o['outage_id'],))
             sqlite_conn.commit()
 
-        # Sync current network status and record this write time
         cursor.execute("SELECT * FROM network_status WHERE host_id = ?", (local_host_id,))
         ns = cursor.fetchone()
         if ns:
@@ -166,7 +145,6 @@ def sync():
             """, (pg_host_id, ns['last_connectivity_check'], bool(ns['is_connected'])))
             pg_conn.commit()
 
-        # Sync ping hosts to remote DB
         cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%'")
         for row in cursor.fetchall():
             pg_cursor.execute(
@@ -189,11 +167,9 @@ def sync():
 
 local_db.init_db()
 
-while True:
-    sleep_until_next_run()
-    if not has_db_config():
-        print("No DB configuration, skipping sync")
-        continue
+if not has_db_config():
+    print("No DB configuration, skipping sync")
+else:
     try:
         sync()
     except Exception as e:
