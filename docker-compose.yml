@@ -17,16 +17,24 @@ services:
     restart: unless-stopped
     environment:
       SQLITE_PATH: /data/speedtest.db
+      HOST_HOSTNAME: ${HOST_HOSTNAME}
+      HOST_HASH: ${HOST_HASH}
     volumes:
       - sqlite_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   connectivity:
     build: .
     restart: unless-stopped
     environment:
       SQLITE_PATH: /data/speedtest.db
+      HOST_HOSTNAME: ${HOST_HOSTNAME}
+      HOST_HASH: ${HOST_HASH}
     volumes:
       - sqlite_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     command: ["python", "connectivity_monitor.py"]
 
   data_sync:
@@ -34,6 +42,8 @@ services:
     restart: unless-stopped
     environment:
       SQLITE_PATH: /data/speedtest.db
+      HOST_HOSTNAME: ${HOST_HOSTNAME}
+      HOST_HASH: ${HOST_HASH}
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: speedtest
@@ -41,6 +51,8 @@ services:
       DB_PASSWORD: speedtest
     volumes:
       - sqlite_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     command: ["python", "data_sync.py"]
 
 volumes:

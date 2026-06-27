@@ -130,6 +130,8 @@ def init_db():
 
 
 def get_host_hash():
+    if os.environ.get('HOST_HASH'):
+        return os.environ['HOST_HASH']
     try:
         result = subprocess.run(
             "cat /sys/class/net/$(ip route show default | awk '/default/ {print $5}')/address | sha256sum | cut -c1-16",
@@ -141,7 +143,7 @@ def get_host_hash():
 
 
 def get_or_create_host():
-    hostname = socket.gethostname()
+    hostname = os.environ.get('HOST_HOSTNAME') or socket.gethostname()
     try:
         timezone = str(get_localzone())
     except Exception:
