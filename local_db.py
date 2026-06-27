@@ -110,19 +110,26 @@ def init_db():
         );
     """)
 
+    # DB settings always reflect current env (updated on every start)
     conn.executemany(
-        "INSERT OR IGNORE INTO setting (setting, value) VALUES (?, ?)",
+        "INSERT INTO setting (setting, value) VALUES (?, ?) ON CONFLICT (setting) DO UPDATE SET value = excluded.value",
         [
             ('db_host',     os.environ.get('DB_HOST', '')),
             ('db_port',     os.environ.get('DB_PORT', '')),
             ('db_name',     os.environ.get('DB_NAME', '')),
             ('db_user',     os.environ.get('DB_USER', '')),
             ('db_password', os.environ.get('DB_PASSWORD', '')),
+        ]
+    )
+    # Ping hosts and status — only seed if not already set
+    conn.executemany(
+        "INSERT OR IGNORE INTO setting (setting, value) VALUES (?, ?)",
+        [
             ('last_db_sync', ''),
-            ('ping_host_1', '8.8.8.8'),      # Google DNS
-            ('ping_host_2', '1.1.1.1'),      # Cloudflare DNS
-            ('ping_host_3', '9.9.9.9'),      # Quad9 DNS
-            ('ping_host_4', '208.67.222.222'), # OpenDNS
+            ('ping_host_1', '8.8.8.8'),
+            ('ping_host_2', '1.1.1.1'),
+            ('ping_host_3', '9.9.9.9'),
+            ('ping_host_4', '208.67.222.222'),
         ]
     )
     conn.commit()

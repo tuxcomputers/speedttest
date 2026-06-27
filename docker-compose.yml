@@ -2,10 +2,11 @@ services:
   db:
     image: postgres:16
     restart: unless-stopped
+    profiles: [local_db]
     environment:
-      POSTGRES_DB: speedtest
-      POSTGRES_USER: speedtest
-      POSTGRES_PASSWORD: speedtest
+      POSTGRES_DB: ${DB_NAME:-speedtest}
+      POSTGRES_USER: ${DB_USER:-speedtest}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-speedtest}
     ports:
       - "5432:5432"
     volumes:
@@ -20,6 +21,11 @@ services:
       HOST_HOSTNAME: ${HOST_HOSTNAME}
       HOST_HASH: ${HOST_HASH}
       TZ: ${TIMEZONE:-UTC}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - sqlite_data:/data
 
@@ -31,6 +37,11 @@ services:
       HOST_HOSTNAME: ${HOST_HOSTNAME}
       HOST_HASH: ${HOST_HASH}
       TZ: ${TIMEZONE:-UTC}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - sqlite_data:/data
     command: ["python", "connectivity_monitor.py"]
@@ -43,11 +54,11 @@ services:
       HOST_HOSTNAME: ${HOST_HOSTNAME}
       HOST_HASH: ${HOST_HASH}
       TZ: ${TIMEZONE:-UTC}
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: speedtest
-      DB_USER: speedtest
-      DB_PASSWORD: speedtest
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - sqlite_data:/data
     command: ["python", "data_sync.py"]
