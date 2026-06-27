@@ -15,7 +15,10 @@ def sleep_until_next_run():
 
 
 def run_speedtest():
-    result = subprocess.run(['speedtest', '--format', 'json'], capture_output=True, text=True)
+    result = subprocess.run(
+        ['speedtest', '--format', 'json', '--accept-license', '--accept-gdpr'],
+        capture_output=True, text=True
+    )
     return json.loads(result.stdout)
 
 
@@ -59,10 +62,10 @@ local_db.init_db()
 host_id = local_db.get_or_create_host()
 
 while True:
-    sleep_until_next_run()
     try:
         data = run_speedtest()
         test_id = save_results(data, host_id)
         print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
     except Exception as e:
         print(f"Test failed, skipping: {e}")
+    sleep_until_next_run()
