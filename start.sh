@@ -2,10 +2,41 @@
 
 set -euo pipefail
 
-git pull
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
+
+git pull
+
+# ── Docker check ──────────────────────────────────────────────────────────────
+
+if ! command -v docker &>/dev/null; then
+    echo "Docker is not installed."
+    if grep -qi "raspberry pi" /proc/cpuinfo 2>/dev/null || grep -qi "raspbian\|raspberry" /etc/os-release 2>/dev/null; then
+        echo ""
+        echo "Raspberry Pi detected. To install Docker, run:"
+        echo ""
+        echo "  curl -fsSL https://get.docker.com -o get-docker.sh"
+        echo "  sudo sh get-docker.sh"
+        echo "  sudo usermod -aG docker \$USER"
+        echo "  newgrp docker"
+        echo ""
+    else
+        echo "Please install Docker: https://docs.docker.com/engine/install/"
+    fi
+    exit 1
+fi
+
+if ! docker info &>/dev/null; then
+    echo "Cannot connect to the Docker daemon — permission denied."
+    echo ""
+    echo "Your user is not in the docker group. Run:"
+    echo ""
+    echo "  sudo usermod -aG docker \$USER"
+    echo "  newgrp docker"
+    echo ""
+    echo "Then run this script again."
+    exit 1
+fi
 
 FORCE_SERVER=false
 if [[ "${1:-}" == "-server" ]]; then
