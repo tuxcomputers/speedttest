@@ -8,15 +8,31 @@ FAST_INTERVAL = 1
 GAP_THRESHOLD = 20
 
 
-def check_internet():
+def get_ping_hosts():
+    conn = local_db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM setting WHERE setting LIKE 'ping_host_%' ORDER BY setting")
+    hosts = [row[0] for row in cursor.fetchall() if row[0]]
+    conn.close()
+    return hosts or ['8.8.8.8']
+
+
+def try_host(host):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3)
-        sock.connect(("8.8.8.8", 53))
+        sock.connect((host, 53))
         sock.close()
         return True
     except Exception:
         return False
+
+
+def check_internet(single_host=False):
+    hosts = get_ping_hosts()
+    if single_host:
+        hosts = hosts[:1]
+    return any(try_host(h) for h in hosts)
 
 
 def now_utc():
@@ -99,7 +115,7 @@ if last_check is not None:
 outage_id = None
 
 while True:
-    connected = check_internet()
+    connected = check_internet(single_host=outage_id is not None)
 
     try:
         update_status(host_id, connected)

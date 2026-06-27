@@ -33,12 +33,40 @@ def get_pg_connection():
     )
 
 
-def get_or_create_pg_host(pg_cursor, hostname, timezone):
-    pg_cursor.execute(
-        "INSERT INTO host (hostname, timezone) VALUES (%s, %s) ON CONFLICT (hostname) DO UPDATE SET timezone = EXCLUDED.timezone RETURNING host_id",
-        (hostname, timezone)
-    )
-    return pg_cursor.fetchone()[0]
+def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash):
+    """Query PG by host_hash, insert if missing, keep local remote_id current."""
+    if not host_hash:
+        raise ValueError("host_hash is required to resolve remote host")
+
+    pg_cursor.execute("SELECT host_id FROM host WHERE host_hash = %s", (host_hash,))
+    row = pg_cursor.fetchone()
+
+    if row:
+        pg_host_id = row[0]
+        pg_cursor.execute(
+            "UPDATE host SET hostname = %s, timezone = %s WHERE host_id = %s",
+            (hostname, timezone, pg_host_id)
+        )
+    else:
+        pg_cursor.execute(
+            "INSERT INTO host (hostname, timezone, host_hash) VALUES (%s, %s, %s) RETURNING host_id",
+            (hostname, timezone, host_hash)
+        )
+        pg_host_id = pg_cursor.fetchone()[0]
+
+    # Keep local remote_id in sync with what PG returned
+    cursor = sqlite_conn.cursor()
+    cursor.execute("SELECT remote_id FROM host WHERE host_id = ?", (local_host_id,))
+    local_remote_id = cursor.fetchone()['remote_id']
+
+    if local_remote_id is None or str(local_remote_id) != str(pg_host_id):
+        sqlite_conn.execute(
+            "UPDATE host SET remote_id = ? WHERE host_id = ?",
+            (str(pg_host_id), local_host_id)
+        )
+        sqlite_conn.commit()
+
+    return pg_host_id
 
 
 def sync():
@@ -54,7 +82,7 @@ def sync():
     try:
         cursor = sqlite_conn.cursor()
 
-        cursor.execute("SELECT host_id, hostname, timezone FROM host LIMIT 1")
+        cursor.execute("SELECT host_id, hostname, timezone, host_hash FROM host LIMIT 1")
         row = cursor.fetchone()
         if not row:
             print("No host record in local DB, nothing to sync")
@@ -63,9 +91,10 @@ def sync():
         local_host_id = row['host_id']
         hostname = row['hostname']
         timezone = row['timezone']
+        host_hash = row['host_hash']
 
         pg_cursor = pg_conn.cursor()
-        pg_host_id = get_or_create_pg_host(pg_cursor, hostname, timezone)
+        pg_host_id = resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash)
         pg_conn.commit()
 
         # Sync test records (and their children: ping, download, upload, server)
@@ -136,6 +165,11 @@ def sync():
                     last_db_write = NOW()
             """, (pg_host_id, ns['last_connectivity_check'], bool(ns['is_connected'])))
             pg_conn.commit()
+
+        sqlite_conn.execute(
+            "UPDATE setting SET value = datetime('now') WHERE setting = 'last_db_sync'"
+        )
+        sqlite_conn.commit()
 
         print(f"Synced {len(tests)} test(s) and {len(outages)} outage(s)")
 

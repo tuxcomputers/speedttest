@@ -1,6 +1,7 @@
 import os
 import socket
 import sqlite3
+import subprocess
 from tzlocal import get_localzone
 
 SQLITE_PATH = os.environ.get('SQLITE_PATH', '/data/speedtest.db')
@@ -20,7 +21,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS host (
             host_id   INTEGER PRIMARY KEY AUTOINCREMENT,
             hostname  TEXT NOT NULL UNIQUE,
-            timezone  TEXT NOT NULL DEFAULT 'UTC'
+            timezone  TEXT NOT NULL DEFAULT 'UTC',
+            host_hash TEXT,
+            remote_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS test (
@@ -100,8 +103,41 @@ def init_db():
             is_connected             INTEGER,
             FOREIGN KEY (host_id) REFERENCES host(host_id)
         );
+
+        CREATE TABLE IF NOT EXISTS setting (
+            setting  TEXT PRIMARY KEY,
+            value    TEXT
+        );
     """)
+
+    conn.executemany(
+        "INSERT OR IGNORE INTO setting (setting, value) VALUES (?, ?)",
+        [
+            ('db_host',     os.environ.get('DB_HOST', '')),
+            ('db_port',     os.environ.get('DB_PORT', '')),
+            ('db_name',     os.environ.get('DB_NAME', '')),
+            ('db_user',     os.environ.get('DB_USER', '')),
+            ('db_password', os.environ.get('DB_PASSWORD', '')),
+            ('last_db_sync', ''),
+            ('ping_host_1', '8.8.8.8'),      # Google DNS
+            ('ping_host_2', '1.1.1.1'),      # Cloudflare DNS
+            ('ping_host_3', '9.9.9.9'),      # Quad9 DNS
+            ('ping_host_4', '208.67.222.222'), # OpenDNS
+        ]
+    )
+    conn.commit()
     conn.close()
+
+
+def get_host_hash():
+    try:
+        result = subprocess.run(
+            "cat /sys/class/net/$(ip route show default | awk '/default/ {print $5}')/address | sha256sum | cut -c1-16",
+            shell=True, capture_output=True, text=True
+        )
+        return result.stdout.strip() or None
+    except Exception:
+        return None
 
 
 def get_or_create_host():
@@ -110,11 +146,12 @@ def get_or_create_host():
         timezone = str(get_localzone())
     except Exception:
         timezone = 'UTC'
+    host_hash = get_host_hash()
 
     conn = get_connection()
     conn.execute(
-        "INSERT INTO host (hostname, timezone) VALUES (?, ?) ON CONFLICT (hostname) DO UPDATE SET timezone = excluded.timezone",
-        (hostname, timezone)
+        "INSERT INTO host (hostname, timezone, host_hash) VALUES (?, ?, ?) ON CONFLICT (hostname) DO UPDATE SET timezone = excluded.timezone, host_hash = excluded.host_hash",
+        (hostname, timezone, host_hash)
     )
     conn.commit()
     cursor = conn.cursor()
