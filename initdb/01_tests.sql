@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS test (
     test_id SERIAL PRIMARY KEY,
     host_id INTEGER NOT NULL,
-    timestamp TIMESTAMPTZ,
+    timestamp TIMESTAMP(0),
     isp TEXT,
     packet_loss REAL,
     result_id TEXT,

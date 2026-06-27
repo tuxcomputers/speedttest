@@ -145,13 +145,30 @@ def sync():
             """, (pg_host_id, ns['last_connectivity_check'], bool(ns['is_connected'])))
             pg_conn.commit()
 
-        cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%'")
-        for row in cursor.fetchall():
-            pg_cursor.execute(
-                "INSERT INTO setting (setting, value) VALUES (%s, %s) ON CONFLICT (setting) DO UPDATE SET value = EXCLUDED.value",
-                (row['setting'], row['value'])
-            )
-        pg_conn.commit()
+        # Ping hosts: remote is source of truth — pull from PG and overwrite local if different.
+        # If PG has none yet, push local defaults up.
+        pg_cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%' ORDER BY setting")
+        pg_ping_hosts = {row[0]: row[1] for row in pg_cursor.fetchall()}
+
+        if pg_ping_hosts:
+            cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%' ORDER BY setting")
+            local_ping_hosts = {row['setting']: row['value'] for row in cursor.fetchall()}
+            if pg_ping_hosts != local_ping_hosts:
+                for setting, value in pg_ping_hosts.items():
+                    sqlite_conn.execute(
+                        "INSERT INTO setting (setting, value) VALUES (?, ?) ON CONFLICT (setting) DO UPDATE SET value = excluded.value",
+                        (setting, value)
+                    )
+                sqlite_conn.commit()
+                print(f"Updated {len(pg_ping_hosts)} ping host(s) from remote DB")
+        else:
+            cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%'")
+            for row in cursor.fetchall():
+                pg_cursor.execute(
+                    "INSERT INTO setting (setting, value) VALUES (%s, %s) ON CONFLICT (setting) DO UPDATE SET value = EXCLUDED.value",
+                    (row['setting'], row['value'])
+                )
+            pg_conn.commit()
 
         sqlite_conn.execute(
             "UPDATE setting SET value = datetime('now') WHERE setting = 'last_db_sync'"
