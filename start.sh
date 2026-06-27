@@ -119,9 +119,9 @@ stored_hash=""
 
 if [[ "${current_hash}" != "${stored_hash}" ]] || ! docker image inspect speedttest-app &>/dev/null; then
     echo "Image out of date or missing — rebuilding..."
-    docker compose up --build -d
+    docker compose up --build -d --remove-orphans
     echo "${current_hash}" > "${hash_file}"
 else
     echo "Restarting containers to pick up latest code..."
-    docker compose restart
+    docker compose up -d --remove-orphans --force-recreate
 fi
