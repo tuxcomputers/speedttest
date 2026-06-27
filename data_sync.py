@@ -21,11 +21,11 @@ def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, h
     if not host_hash:
         raise ValueError("host_hash is required to resolve remote host")
 
-    pg_cursor.execute("SELECT host_id FROM host WHERE host_hash = %s", (host_hash,))
+    pg_cursor.execute("SELECT host_id, last_db_sync FROM host WHERE host_hash = %s", (host_hash,))
     row = pg_cursor.fetchone()
 
     if row:
-        pg_host_id = row[0]
+        pg_host_id, last_db_sync = row[0], row[1]
         pg_cursor.execute(
             "UPDATE host SET hostname = %s, timezone = %s WHERE host_id = %s",
             (hostname, timezone, pg_host_id)
@@ -36,6 +36,7 @@ def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, h
             (hostname, timezone, host_hash)
         )
         pg_host_id = pg_cursor.fetchone()[0]
+        last_db_sync = None
 
     cursor = sqlite_conn.cursor()
     cursor.execute("SELECT remote_id FROM host WHERE host_id = ?", (local_host_id,))
@@ -48,7 +49,7 @@ def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, h
         )
         sqlite_conn.commit()
 
-    return pg_host_id
+    return pg_host_id, last_db_sync
 
 
 def sync():
@@ -76,13 +77,33 @@ def sync():
         host_hash = row['host_hash']
 
         pg_cursor = pg_conn.cursor()
-        pg_host_id = resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash)
+        pg_host_id, last_db_sync = resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash)
         pg_conn.commit()
+
+        # No last_db_sync on the remote means this host has never synced to this server —
+        # clear local synced_at markers so everything is sent from the beginning.
+        if last_db_sync is None:
+            sqlite_conn.execute("UPDATE test SET synced_at = NULL")
+            sqlite_conn.execute("UPDATE outage SET synced_at = NULL")
+            sqlite_conn.commit()
+            print("First sync to this server — sending all records")
 
         cursor.execute("SELECT * FROM test WHERE synced_at IS NULL")
         tests = cursor.fetchall()
 
+        skipped_tests = 0
         for t in tests:
+            pg_cursor.execute(
+                "SELECT test_id FROM test WHERE host_id = %s AND timestamp = %s",
+                (pg_host_id, t['timestamp'])
+            )
+            existing = pg_cursor.fetchone()
+            if existing:
+                sqlite_conn.execute("UPDATE test SET synced_at = datetime('now') WHERE test_id = ?", (t['test_id'],))
+                sqlite_conn.commit()
+                skipped_tests += 1
+                continue
+
             pg_cursor.execute(
                 "INSERT INTO test (host_id, timestamp, isp, packet_loss, result_id, result_url) VALUES (%s, %s, %s, %s, %s, %s) RETURNING test_id",
                 (pg_host_id, t['timestamp'], t['isp'], t['packet_loss'], t['result_id'], t['result_url'])
@@ -123,7 +144,18 @@ def sync():
         cursor.execute("SELECT * FROM outage WHERE synced_at IS NULL AND end_time IS NOT NULL")
         outages = cursor.fetchall()
 
+        skipped_outages = 0
         for o in outages:
+            pg_cursor.execute(
+                "SELECT outage_id FROM outage WHERE host_id = %s AND start_time = %s AND end_time = %s",
+                (pg_host_id, o['start_time'], o['end_time'])
+            )
+            if pg_cursor.fetchone():
+                sqlite_conn.execute("UPDATE outage SET synced_at = datetime('now') WHERE outage_id = ?", (o['outage_id'],))
+                sqlite_conn.commit()
+                skipped_outages += 1
+                continue
+
             pg_cursor.execute(
                 "INSERT INTO outage (host_id, start_time, end_time, status) VALUES (%s, %s, %s, %s)",
                 (pg_host_id, o['start_time'], o['end_time'], o['status'])
@@ -170,12 +202,15 @@ def sync():
                 )
             pg_conn.commit()
 
-        sqlite_conn.execute(
-            "UPDATE setting SET value = datetime('now') WHERE setting = 'last_db_sync'"
+        pg_cursor.execute(
+            "UPDATE host SET last_db_sync = NOW() AT TIME ZONE 'UTC' WHERE host_id = %s",
+            (pg_host_id,)
         )
-        sqlite_conn.commit()
+        pg_conn.commit()
 
-        print(f"Synced {len(tests)} test(s) and {len(outages)} outage(s)")
+        new_tests = len(tests) - skipped_tests
+        new_outages = len(outages) - skipped_outages
+        print(f"Synced {new_tests} test(s), {new_outages} outage(s) — skipped {skipped_tests} duplicate test(s), {skipped_outages} duplicate outage(s)")
 
     finally:
         sqlite_conn.close()
