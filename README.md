@@ -17,17 +17,13 @@ All scripts are bind-mounted from the repo directory. The supervisor spawns each
 
 Runs the [Ookla speedtest CLI](https://www.speedtest.net/apps/cli) and records download speed, upload speed, ping latency/jitter, packet loss, server details, and a link to the full result. Bandwidth is stored in Mbps (rounded to 2 decimal places). The CLI is given a 120-second timeout — if it hangs beyond that the run is abandoned and the next scheduled slot runs cleanly.
 
-The speed test is held while a connectivity outage is open in the database. The outage record is the sole authority — the supervisor queries SQLite directly rather than relying on inter-process state. Once the outage `end_time` is written the speedtest resumes at the next 5-minute mark.
-
-Once the speed test finishes it directly triggers the database sync, ensuring the sync always runs against a freshly written result with no timing guesswork.
+The speed test runs on every 5-minute clock-aligned mark regardless of connectivity state. After the test completes it checks the local outage table — if an outage is open the result is discarded, otherwise it is saved to SQLite. Either way the database sync is triggered on completion.
 
 ### Connectivity monitor
 
-Checks internet connectivity by opening a TCP connection to port 53 on a configurable set of hosts (default: 8.8.8.8, 1.1.1.1, 9.9.9.9, 208.67.222.222).
+Checks internet connectivity by opening a TCP connection to port 53 on a configurable set of hosts (default: 8.8.8.8, 1.1.1.1, 9.9.9.9, 208.67.222.222). Connectivity monitoring starts immediately when the container starts; the speed test waits for the first clock-aligned 5-minute mark.
 
-Under normal conditions it is spawned every 10 seconds, runs a single check, and exits. If the connection is lost it writes the outage start time immediately and enters a 1-second loop, updating status on each tick. When connectivity is restored it writes `end_time`, closes the outage, and exits. The supervisor sees the outage is closed and allows the speedtest to run again.
-
-If an outage is open but no connectivity process is running the supervisor spawns one immediately rather than waiting for the next 10-second interval, ensuring the outage is resolved as quickly as possible.
+Under normal conditions the monitor is spawned every 10 seconds, runs a single check, and exits. If the connection is lost it writes the outage start time immediately and enters a 1-second loop, updating status on each tick. When connectivity is restored it writes `end_time`, closes the outage, and exits.
 
 Gaps in monitoring (e.g. system reboots) are recorded as `unknown` status outage entries so the history remains complete.
 
