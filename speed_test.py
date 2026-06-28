@@ -56,3 +56,5 @@ try:
     print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
 except Exception as e:
     print(f"Test failed: {e}")
+
+subprocess.Popen(['python', 'data_sync.py'])
