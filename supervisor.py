@@ -41,12 +41,17 @@ next_connectivity = time.time()
 
 while True:
     now = time.time()
+    connectivity_running = is_running(processes['connectivity'])
+    open_outage = outage_active()
 
-    if now >= next_connectivity and not is_running(processes['connectivity']):
+    # Spawn connectivity on normal 10s interval, or immediately if there's an
+    # open outage with nothing running to resolve it
+    if not connectivity_running and (now >= next_connectivity or open_outage):
         processes['connectivity'] = spawn('connectivity_monitor.py')
         next_connectivity = now + CONNECTIVITY_INTERVAL
 
-    if now >= next_speedtest and not is_running(processes['speedtest']) and not outage_active():
+    # Speedtest is held while any outage is open — the outage record is the authority.
+    if now >= next_speedtest and not is_running(processes['speedtest']) and not open_outage:
         processes['speedtest'] = spawn('speed_test.py')
         next_speedtest = next_aligned(SPEEDTEST_INTERVAL)
 
