@@ -3,18 +3,6 @@ import json
 import local_db
 
 
-def outage_active():
-    try:
-        conn = local_db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM outage WHERE end_time IS NULL")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count > 0
-    except Exception:
-        return False
-
-
 def run_speedtest():
     result = subprocess.run(
         ['speedtest', '--format', 'json', '--accept-license', '--accept-gdpr'],
@@ -68,11 +56,8 @@ host_id = local_db.get_or_create_host()
 
 try:
     data = run_speedtest()
-    if outage_active():
-        print("Outage active — result not saved")
-    else:
-        test_id = save_results(data, host_id)
-        print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
+    test_id = save_results(data, host_id)
+    print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
 except Exception as e:
     print(f"Test failed: {e}")
 

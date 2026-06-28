@@ -17,7 +17,7 @@ All scripts are bind-mounted from the repo directory. The supervisor spawns each
 
 Runs the [Ookla speedtest CLI](https://www.speedtest.net/apps/cli) and records download speed, upload speed, ping latency/jitter, packet loss, server details, and a link to the full result. Bandwidth is stored in Mbps (rounded to 2 decimal places). The CLI is given a 120-second timeout — if it hangs beyond that the run is abandoned and the next scheduled slot runs cleanly. Some fields (`packet_loss`, `result_url`) are optional and stored as NULL when the CLI omits them.
 
-The speed test runs on every 5-minute clock-aligned mark regardless of connectivity state. After the test completes it checks the local outage table — if an outage is open the result is discarded, otherwise it is saved to SQLite. Either way the database sync is triggered on completion.
+The speed test runs on every 5-minute clock-aligned mark, but only if no outage is currently open — the supervisor checks the local outage table before spawning the script. If an outage is active the slot is skipped and the next clock-aligned mark is tried. The database sync is always triggered on completion.
 
 ### Connectivity monitor
 
@@ -62,7 +62,7 @@ Host (Pi / tower / etc.)
 │   └── setting (ping hosts, DB config)
 └── Docker container
     └── supervisor.py
-        ├── → speed_test.py             (every 5 min, held during outage)
+        ├── → speed_test.py             (every 5 min — skipped if outage open)
         │       └── → data_sync.py      (triggered on completion)
         └── → connectivity_monitor.py   (every 10s / 1s loop during outage)
 

@@ -20,6 +20,18 @@ def is_running(p):
     return p is not None and p.poll() is None
 
 
+def outage_active():
+    try:
+        conn = local_db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM outage WHERE end_time IS NULL")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
+
 local_db.init_db()
 
 processes = {'speedtest': None, 'connectivity': None}
@@ -35,7 +47,8 @@ while True:
         next_connectivity = now + CONNECTIVITY_INTERVAL
 
     if now >= next_speedtest and not is_running(processes['speedtest']):
-        processes['speedtest'] = spawn('speed_test.py')
+        if not outage_active():
+            processes['speedtest'] = spawn('speed_test.py')
         next_speedtest = next_aligned(SPEEDTEST_INTERVAL)
 
     next_event = min(next_connectivity, next_speedtest)
