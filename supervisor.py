@@ -24,7 +24,7 @@ local_db.init_db()
 
 processes = {'speedtest': None, 'connectivity': None}
 
-next_speedtest = time.time()
+next_speedtest = next_aligned(SPEEDTEST_INTERVAL)
 next_connectivity = time.time()
 
 while True:
