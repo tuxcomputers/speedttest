@@ -4,21 +4,22 @@ A self-hosted internet speed and connectivity monitoring system designed to run 
 
 ## How it works
 
-Each host runs a single Docker container. Inside that container a supervisor process manages three tasks on a schedule:
+Each host runs a single Docker container. Inside that container a supervisor process schedules two tasks:
 
 | Task | Interval | Script |
 |---|---|---|
 | Speed test | Every 5 minutes, clock-aligned | `speed_test.py` |
 | Connectivity check | Every 10 seconds (1 second during outage) | `connectivity_monitor.py` |
-| Database sync | Every 5 minutes at :30s | `data_sync.py` |
 
-All scripts are bind-mounted from the repo directory. The supervisor spawns each script as a fresh process at the right time, so a `git pull` on the host takes effect on the next scheduled run — no container rebuild required.
+All scripts are bind-mounted from the repo directory. The supervisor spawns each script as a fresh process at the right time, so a `git pull` + `docker compose restart app` on the host takes effect immediately — no image rebuild required.
 
 ### Speed test
 
 Runs the [Ookla speedtest CLI](https://www.speedtest.net/apps/cli) and records download speed, upload speed, ping latency/jitter, packet loss, server details, and a link to the full result. Bandwidth is stored in Mbps (rounded to 2 decimal places).
 
 The speed test is held while a connectivity outage is active — there is no point running it on a down connection.
+
+Once the speed test finishes it directly triggers the database sync, ensuring the sync always runs against a freshly written result with no timing guesswork.
 
 ### Connectivity monitor
 
@@ -30,7 +31,7 @@ Gaps in monitoring (e.g. system reboots) are recorded as `unknown` status outage
 
 ### Database sync
 
-Syncs locally accumulated data to a central PostgreSQL database. Data is always written to a local SQLite database first, then synced to PostgreSQL. This means the system keeps recording even when the remote database is unreachable. The sync runs on its own schedule and is not paused during connectivity outages — it will simply fail gracefully and retry on the next cycle.
+Triggered by the speed test on completion. Syncs locally accumulated data to a central PostgreSQL database. Data is always written to a local SQLite database first, then synced to PostgreSQL. This means the system keeps recording even when the remote database is unreachable.
 
 The sync pushes:
 - Speed test results (`test`, `ping`, `download`, `upload`, `server`)
@@ -64,8 +65,8 @@ Host (Pi / tower / etc.)
 └── Docker container
     └── supervisor.py
         ├── → speed_test.py             (every 5 min, held during outage)
-        ├── → connectivity_monitor.py   (every 10s / 1s loop during outage)
-        └── → data_sync.py              (every 5 min at :30s)
+        │       └── → data_sync.py      (triggered on completion)
+        └── → connectivity_monitor.py   (every 10s / 1s loop during outage)
 
 Central PostgreSQL
 ├── host  (includes last_db_sync)
