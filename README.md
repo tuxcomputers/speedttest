@@ -9,7 +9,7 @@ Each host runs a single Docker container. Inside that container a supervisor pro
 | Task | Interval | Script |
 |---|---|---|
 | Speed test | Every 5 minutes, clock-aligned | `speed_test.py` |
-| Connectivity check | Every 10 seconds | `connectivity_monitor.py` |
+| Connectivity check | Every 10 seconds (1 second during outage) | `connectivity_monitor.py` |
 | Database sync | Every 5 minutes at :30s | `data_sync.py` |
 
 All scripts are bind-mounted from the repo directory. The supervisor spawns each script as a fresh process at the right time, so a `git pull` on the host takes effect on the next scheduled run — no container rebuild required.
@@ -18,24 +18,33 @@ All scripts are bind-mounted from the repo directory. The supervisor spawns each
 
 Runs the [Ookla speedtest CLI](https://www.speedtest.net/apps/cli) and records download speed, upload speed, ping latency/jitter, packet loss, server details, and a link to the full result. Bandwidth is stored in Mbps (rounded to 2 decimal places).
 
+The speed test is held while a connectivity outage is active — there is no point running it on a down connection.
+
 ### Connectivity monitor
 
-Checks internet connectivity by opening a TCP connection to port 53 on a configurable set of hosts (default: 8.8.8.8, 1.1.1.1, 9.9.9.9, 208.67.222.222). Under normal conditions it runs once every 10 seconds and exits.
+Checks internet connectivity by opening a TCP connection to port 53 on a configurable set of hosts (default: 8.8.8.8, 1.1.1.1, 9.9.9.9, 208.67.222.222).
 
-If the connection is lost the monitor enters a 1-second loop, recording the outage start time and updating status on each tick. When connectivity is restored it closes the outage record and exits. While the monitor is in its outage loop the supervisor holds off on running speed tests — there is no point testing a down connection.
+Under normal conditions it is spawned every 10 seconds, runs a single check, and exits. If the connection is lost it records the outage start time and enters a 1-second loop, updating the status on each tick. When connectivity is restored it closes the outage record and exits. The supervisor sees the process is still running and withholds any new speed test until it finishes.
 
-Gaps in monitoring (e.g. system reboots) are recorded as `unknown` status outage entries so the history is complete.
+Gaps in monitoring (e.g. system reboots) are recorded as `unknown` status outage entries so the history remains complete.
 
 ### Database sync
 
-Syncs locally accumulated data to a central PostgreSQL database. Data is always written to a local SQLite database first, then synced to PostgreSQL. This means the system keeps recording even when the remote database is unreachable.
+Syncs locally accumulated data to a central PostgreSQL database. Data is always written to a local SQLite database first, then synced to PostgreSQL. This means the system keeps recording even when the remote database is unreachable. The sync runs on its own schedule and is not paused during connectivity outages — it will simply fail gracefully and retry on the next cycle.
 
 The sync pushes:
-- Speed test results (test, ping, download, upload, server)
+- Speed test results (`test`, `ping`, `download`, `upload`, `server`)
 - Closed outage records
 - Current network status
 
-**Ping hosts are pulled from the remote database**, not pushed. The remote database is the source of truth for which hosts to ping — change them once in PostgreSQL and all connected hosts pick up the new values on their next sync. On first connection, local defaults are pushed up if the remote has none.
+**Duplicate detection** prevents double-insertion if the same data is synced more than once:
+- Tests are matched by `host_id` + `timestamp` — if a matching test is found in PostgreSQL the test and all its children are skipped
+- Outages are matched by `host_id` + `start_time` + `end_time`
+- Network status is always upserted
+
+**Ping hosts are pulled from the remote database**, not pushed. The remote database is the source of truth for which hosts to ping — change them once in PostgreSQL and all connected hosts pick up the new values on their next sync. On first connection, local defaults are pushed up if the remote has none yet.
+
+**`last_db_sync`** is recorded on the PostgreSQL `host` record at the end of every successful sync. This is the authoritative sync timestamp — always read from the remote. If it is NULL (new server or first run) all local records are queued for sync regardless of their local sync state, and the duplicate detection ensures nothing is inserted twice.
 
 ### Multi-host support
 
@@ -51,15 +60,15 @@ Host (Pi / tower / etc.)
 │   ├── test + ping/download/upload/server
 │   ├── outage
 │   ├── network_status
-│   └── setting (ping hosts, DB config, last sync)
+│   └── setting (ping hosts, DB config)
 └── Docker container
     └── supervisor.py
-        ├── → speed_test.py        (every 5 min)
-        ├── → connectivity_monitor.py  (every 10s / 1s during outage)
-        └── → data_sync.py         (every 5 min at :30s)
+        ├── → speed_test.py             (every 5 min, held during outage)
+        ├── → connectivity_monitor.py   (every 10s / 1s loop during outage)
+        └── → data_sync.py              (every 5 min at :30s)
 
 Central PostgreSQL
-├── host
+├── host  (includes last_db_sync)
 ├── test + ping/download/upload/server
 ├── outage
 ├── network_status
@@ -94,7 +103,7 @@ cd speedttest
 - Asks whether to connect to a PostgreSQL database (local Docker container or remote server)
 - Builds the Docker image and starts the container
 
-On subsequent runs it pulls the latest code, checks whether the image needs rebuilding (only when `Dockerfile` or `requirements.txt` change), and restarts the container.
+On subsequent runs it pulls the latest code, checks whether the image needs rebuilding (only when `Dockerfile` or `requirements.txt` change), and recreates the container.
 
 Pass `-server` to re-run the database configuration questions:
 ```bash
@@ -103,15 +112,40 @@ Pass `-server` to re-run the database configuration questions:
 
 ### PostgreSQL options
 
-When asked about PostgreSQL:
+When asked `Connect to a PostgreSQL server? [y/n]`, answering `y` presents:
+
+```
+PostgreSQL:
+  local container [l]
+  remote server   [r]
+  exit            [e]
+Choice:
+```
 
 | Choice | Effect |
 |---|---|
-| `l` — local container | Starts a PostgreSQL 16 container on the same host, accessible on port 5432 |
-| `r` — remote server | Connects to an existing PostgreSQL server; prompts for host, port, database, user, and password |
-| anything else | Exits — re-run `./start.sh` when ready |
+| `l` | Starts a PostgreSQL 16 container on the same host, accessible on port 5432 |
+| `r` | Connects to an existing PostgreSQL server; prompts for host, port, database, user, and password |
+| `e` or anything else | Exits the script |
 
-If no PostgreSQL is configured the system runs in SQLite-only mode and skips the sync step.
+Answering `n` to the first question runs in SQLite-only mode with no sync.
+
+## Querying data
+
+All timestamps in PostgreSQL are stored in UTC. To display them in each host's local time, join to the `host` table and use a double `AT TIME ZONE`:
+
+```sql
+SELECT
+    t.test_id,
+    t.timestamp AT TIME ZONE 'UTC' AT TIME ZONE h.timezone AS local_time,
+    h.hostname,
+    h.timezone
+FROM test t
+JOIN host h ON h.host_id = t.host_id
+ORDER BY t.timestamp DESC;
+```
+
+The first `AT TIME ZONE 'UTC'` tells PostgreSQL the stored value is UTC; the second converts it to the IANA timezone recorded for that host.
 
 ## Database schema
 
@@ -120,12 +154,15 @@ If no PostgreSQL is configured the system runs in SQLite-only mode and skips the
 |---|---|---|
 | `host_id` | SERIAL PK | |
 | `hostname` | TEXT UNIQUE | |
-| `timezone` | TEXT | IANA timezone string |
-| `host_hash` | TEXT | SHA-256 of MAC address (16 chars) |
-| `remote_id` | TEXT | PG `host_id` cached locally |
+| `timezone` | TEXT | IANA timezone string (e.g. `Australia/Brisbane`) |
+| `host_hash` | TEXT | SHA-256 of MAC address, first 16 characters |
+| `remote_id` | TEXT | PG `host_id` cached in local SQLite |
+| `last_db_sync` | TIMESTAMP(0) | UTC timestamp of last successful sync — authoritative |
 
 ### `test`
 Parent record for each speed test run. Children: `ping`, `download`, `upload`, `server`.
+
+All timestamps are `TIMESTAMP(0)` — second precision, UTC.
 
 ### `network_status`
 One row per host — current connectivity state and timestamps for the last check and last DB write.
@@ -134,8 +171,8 @@ One row per host — current connectivity state and timestamps for the last chec
 | Column | Notes |
 |---|---|
 | `start_time` | When connectivity was lost |
-| `end_time` | When it was restored (NULL if ongoing) |
+| `end_time` | When it was restored (`NULL` if ongoing) |
 | `status` | `outage` or `unknown` (gap in monitoring) |
 
 ### `setting`
-Key/value store. `ping_host_1` through `ping_host_4` control which hosts are used for connectivity checks. Managed centrally in PostgreSQL.
+Key/value store. `ping_host_1` through `ping_host_4` control which hosts are used for connectivity checks. Managed centrally in PostgreSQL — the remote value overwrites local on every sync.
