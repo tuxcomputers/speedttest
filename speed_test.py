@@ -21,6 +21,8 @@ def run_speedtest():
         capture_output=True, text=True,
         timeout=120
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"speedtest exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}")
     return json.loads(result.stdout)
 
 
@@ -28,10 +30,11 @@ def save_results(data, host_id):
     conn = local_db.get_connection()
     cursor = conn.cursor()
 
+    result_obj = data.get('result') or {}
     cursor.execute(
         'INSERT INTO test (host_id, timestamp, isp, packet_loss, result_id, result_url) VALUES (?, ?, ?, ?, ?, ?)',
-        (host_id, data['timestamp'], data['isp'], data['packetLoss'],
-         data['result']['id'], data['result']['url'])
+        (host_id, data['timestamp'], data['isp'], data.get('packetLoss'),
+         result_obj.get('id'), result_obj.get('url'))
     )
     test_id = cursor.lastrowid
 
