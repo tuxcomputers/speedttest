@@ -6,7 +6,8 @@ import local_db
 def run_speedtest():
     result = subprocess.run(
         ['speedtest', '--format', 'json', '--accept-license', '--accept-gdpr'],
-        capture_output=True, text=True
+        capture_output=True, text=True,
+        timeout=120
     )
     return json.loads(result.stdout)
 
