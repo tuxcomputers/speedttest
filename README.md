@@ -17,7 +17,7 @@ All scripts are bind-mounted from the repo directory. The supervisor spawns each
 
 Runs the [Ookla speedtest CLI](https://www.speedtest.net/apps/cli) and records download speed, upload speed, ping latency/jitter, packet loss, server details, and a link to the full result. Bandwidth is stored in Mbps (rounded to 2 decimal places). The CLI is given a 120-second timeout — if it hangs beyond that the run is abandoned and the next scheduled slot runs cleanly. Some fields (`packet_loss`, `result_url`) are optional and stored as NULL when the CLI omits them.
 
-The speed test runs on every 5-minute clock-aligned mark, but only if no outage is currently open — the supervisor checks the local outage table before spawning the script. If an outage is active the slot is skipped and the next clock-aligned mark is tried. The database sync is always triggered on completion.
+The speed test runs on every 5-minute clock-aligned mark, but only if no outage is currently open — the supervisor checks the local outage table before spawning the script. If an outage is active the slot is skipped but the database sync is still triggered, so closed outage records and network status continue to reach the remote database even when internet testing is paused. The database sync is also triggered on every completed speed test.
 
 ### Connectivity monitor
 

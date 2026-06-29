@@ -47,7 +47,9 @@ while True:
         next_connectivity = now + CONNECTIVITY_INTERVAL
 
     if now >= next_speedtest and not is_running(processes['speedtest']):
-        if not outage_active():
+        if outage_active():
+            subprocess.Popen(['python', 'data_sync.py'])
+        else:
             processes['speedtest'] = spawn('speed_test.py')
         next_speedtest = next_aligned(SPEEDTEST_INTERVAL)
 
