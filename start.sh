@@ -43,13 +43,40 @@ if [[ "${1:-}" == "-server" ]]; then
     FORCE_SERVER=true
 fi
 
+# Portable in-place sed (macOS requires an explicit empty suffix)
+sedi() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
 # ── .env bootstrap ────────────────────────────────────────────────────────────
 
 if [[ ! -f ".env" ]]; then
     echo "Creating .env..."
-    NIC=$(ip route show default | awk '/default/ {print $5}')
-    HOST_HASH=$(cat /sys/class/net/${NIC}/address | sha256sum | cut -c1-16)
-    TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
+
+    # Get MAC address — Linux uses ip+sysfs, macOS uses route+ifconfig
+    if command -v ip &>/dev/null; then
+        NIC=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+        MAC=$(cat /sys/class/net/${NIC}/address 2>/dev/null)
+    else
+        NIC=$(route get default 2>/dev/null | awk '/interface:/ {print $2}')
+        MAC=$(ifconfig "${NIC}" 2>/dev/null | awk '/ether/ {print $2}')
+    fi
+
+    if command -v sha256sum &>/dev/null; then
+        HOST_HASH=$(printf '%s\n' "${MAC}" | sha256sum | cut -c1-16)
+    else
+        HOST_HASH=$(printf '%s\n' "${MAC}" | shasum -a 256 | cut -c1-16)
+    fi
+
+    # Get timezone — Linux uses timedatectl, macOS uses the localtime symlink
+    TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null \
+        || readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' \
+        || echo "UTC")
+
     cat > .env <<EOF
 HOST_HOSTNAME=$(hostname)
 HOST_HASH=${HOST_HASH}
@@ -77,8 +104,8 @@ if [[ "${FORCE_SERVER}" == true ]] || ! has_db_settings; then
         echo ""
 
         if [[ "${pg_choice}" == "l" ]]; then
-            sed -i '/^DB_/d' .env
-            sed -i '/^COMPOSE_PROFILES/d' .env
+            sedi '/^DB_/d' .env
+            sedi '/^COMPOSE_PROFILES/d' .env
             cat >> .env <<EOF
 DB_HOST=db
 DB_PORT=5432
@@ -90,8 +117,8 @@ EOF
             echo "Local PostgreSQL container configured."
 
         elif [[ "${pg_choice}" == "r" ]]; then
-            sed -i '/^DB_/d' .env
-            sed -i '/^COMPOSE_PROFILES/d' .env
+            sedi '/^DB_/d' .env
+            sedi '/^COMPOSE_PROFILES/d' .env
             read -p "Host:        " db_host
             read -p "Port [5432]: " db_port
             db_port="${db_port:-5432}"
@@ -114,7 +141,7 @@ EOF
             exit 0
         fi
     else
-        sed -i '/^COMPOSE_PROFILES/d' .env
+        sedi '/^COMPOSE_PROFILES/d' .env
         echo "COMPOSE_PROFILES=" >> .env
         echo "Skipping PostgreSQL — running local SQLite only."
     fi
@@ -123,7 +150,11 @@ fi
 # ── Image rebuild check ───────────────────────────────────────────────────────
 
 hash_file="/tmp/speedttest-image.hash"
-current_hash=$(cat Dockerfile requirements.txt | md5sum | cut -d' ' -f1)
+if command -v md5sum &>/dev/null; then
+    current_hash=$(cat speedtest/Dockerfile speedtest/requirements.txt | md5sum | cut -d' ' -f1)
+else
+    current_hash=$(cat speedtest/Dockerfile speedtest/requirements.txt | shasum -a 256 | cut -d' ' -f1)
+fi
 stored_hash=""
 [[ -f "${hash_file}" ]] && stored_hash=$(cat "${hash_file}")
 

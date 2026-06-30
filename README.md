@@ -74,6 +74,17 @@ Central PostgreSQL
 └── setting (ping hosts — source of truth)
 ```
 
+## Repository layout
+
+```
+speedttest/
+├── docker-compose.yml   # orchestrates the app + db services
+├── start.sh             # bootstrap / deploy script
+├── speedtest/           # the host agent — supervisor + scripts (built into the app image)
+├── db/                  # PostgreSQL schema (mounted as docker-entrypoint-initdb.d)
+└── gui/                 # front-end (not yet built)
+```
+
 ## Setup
 
 ### Requirements
@@ -102,7 +113,7 @@ cd speedttest
 - Asks whether to connect to a PostgreSQL database (local Docker container or remote server)
 - Builds the Docker image and starts the container
 
-On subsequent runs it pulls the latest code, checks whether the image needs rebuilding (only when `Dockerfile` or `requirements.txt` change), and recreates the container.
+On subsequent runs it pulls the latest code, checks whether the image needs rebuilding (only when `speedtest/Dockerfile` or `speedtest/requirements.txt` change), and recreates the container.
 
 Pass `-server` to re-run the database configuration questions:
 ```bash

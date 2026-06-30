@@ -11,10 +11,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./initdb:/docker-entrypoint-initdb.d
+      - ./db:/docker-entrypoint-initdb.d
 
   app:
-    build: .
+    build: ./speedtest
     restart: unless-stopped
     environment:
       SQLITE_PATH: /data/speedtest.db
@@ -28,7 +28,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
       - sqlite_data:/data
-      - .:/app
+      - ./speedtest:/app
 
 volumes:
   pgdata:
