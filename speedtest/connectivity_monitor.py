@@ -1,9 +1,21 @@
+import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import local_db
 
-GAP_THRESHOLD = 20
+import local_db
+from log_setup import get_logger
+
+log = get_logger('connectivity')
+
+# Gaps in monitoring shorter than this (scheduling delays, container
+# restarts) are not worth recording as 'unknown' outages.
+GAP_THRESHOLD = 60
+
+CHECK_TIMEOUT = 3        # per-host timeout for the normal 10s cadence
+OUTAGE_CHECK_TIMEOUT = 1.5  # tighter timeout inside the outage loop
+STATUS_WRITE_INTERVAL = 10  # min seconds between heartbeat writes during an outage
 
 
 def get_ping_hosts():
@@ -15,10 +27,36 @@ def get_ping_hosts():
     return hosts or ['8.8.8.8']
 
 
-def try_host(host):
+def dns_query_ok(host, timeout):
+    """Send a real DNS query (A record for example.com) and require a matching
+    response. A bare TCP connect to port 53 succeeds against captive portals
+    and DNS-intercepting middleboxes; an answered query is much stronger
+    evidence of actual internet reachability."""
+    txid = os.urandom(2)
+    query = (
+        txid
+        + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'  # RD flag, 1 question
+        + b'\x07example\x03com\x00'                    # QNAME example.com
+        + b'\x00\x01\x00\x01'                          # QTYPE A, QCLASS IN
+    )
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(query, (host, 53))
+        resp, _ = sock.recvfrom(512)
+        return resp[:2] == txid and bool(resp[2] & 0x80)  # our txid, QR=response
+    except Exception:
+        return False
+    finally:
+        if sock is not None:
+            sock.close()
+
+
+def tcp_connect_ok(host, timeout):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3)
+        sock.settimeout(timeout)
         sock.connect((host, 53))
         sock.close()
         return True
@@ -26,11 +64,20 @@ def try_host(host):
         return False
 
 
-def check_internet(single_host=False):
+def check_internet(single_host=False, timeout=CHECK_TIMEOUT):
     hosts = get_ping_hosts()
     if single_host:
         hosts = hosts[:1]
-    return any(try_host(h) for h in hosts)
+    # Check all hosts concurrently so a full sweep is bounded by the timeout,
+    # not timeout * len(hosts).
+    with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+        if any(pool.map(lambda h: dns_query_ok(h, timeout), hosts)):
+            return True
+        # Fall back to a TCP connect for networks that filter outbound UDP/53.
+        if any(pool.map(lambda h: tcp_connect_ok(h, timeout), hosts)):
+            log.info("DNS queries failed but TCP connect to port 53 succeeded — treating as connected")
+            return True
+    return False
 
 
 def now_utc():
@@ -110,56 +157,65 @@ def record_unknown_gap(host_id, start_time, end_time):
     conn.close()
 
 
-local_db.init_db()
-host_id = local_db.get_or_create_host()
+def main():
+    local_db.init_db()
+    host_id = local_db.get_or_create_host()
 
-last_check = get_last_connectivity_check(host_id)
-startup_time = now_utc()
-if last_check is not None:
-    gap_seconds = (startup_time - last_check).total_seconds()
-    if gap_seconds > GAP_THRESHOLD:
-        record_unknown_gap(host_id, last_check, startup_time)
-        print(f"Recorded unknown gap of {gap_seconds:.0f}s ({last_check} to {startup_time})")
+    last_check = get_last_connectivity_check(host_id)
+    startup_time = now_utc()
+    if last_check is not None:
+        gap_seconds = (startup_time - last_check).total_seconds()
+        if gap_seconds > GAP_THRESHOLD:
+            record_unknown_gap(host_id, last_check, startup_time)
+            log.info(f"Recorded unknown gap of {gap_seconds:.0f}s ({last_check} to {startup_time})")
 
-outage_id = get_open_outage(host_id)
-connected = check_internet(single_host=outage_id is not None)
+    outage_id = get_open_outage(host_id)
+    connected = check_internet(single_host=outage_id is not None)
 
-try:
-    update_status(host_id, connected)
-except Exception as e:
-    print(f"Failed to update network status: {e}")
+    try:
+        update_status(host_id, connected)
+    except Exception as e:
+        log.error(f"Failed to update network status: {e}")
 
-if connected:
-    if outage_id is not None:
-        try:
-            close_outage(outage_id)
-            print(f"Internet restored, closed outage #{outage_id}")
-        except Exception as e:
-            print(f"Failed to close outage: {e}")
-else:
+    if connected:
+        if outage_id is not None:
+            try:
+                close_outage(outage_id)
+                log.info(f"Internet restored, closed outage #{outage_id}")
+            except Exception as e:
+                log.error(f"Failed to close outage: {e}")
+        return
+
     if outage_id is None:
         try:
             outage_id = open_outage(host_id, now_utc())
-            print(f"Internet down, opened outage #{outage_id}")
+            log.warning(f"Internet down, opened outage #{outage_id}")
         except Exception as e:
-            print(f"Failed to open outage: {e}")
+            log.error(f"Failed to open outage: {e}")
     else:
-        print("No internet connection (outage ongoing)")
+        log.warning("No internet connection (outage ongoing)")
 
-    # Network is down — loop at 1s until restored, then exit
+    # Network is down — poll rapidly until restored, then exit. Status
+    # heartbeats are throttled so a long outage doesn't hammer the SQLite
+    # file (which usually lives on an SD card) every tick.
+    last_status_write = time.monotonic()
     while not connected:
         time.sleep(1)
-        connected = check_internet(single_host=True)
-        try:
-            update_status(host_id, connected)
-        except Exception as e:
-            print(f"Failed to update network status: {e}")
+        connected = check_internet(single_host=True, timeout=OUTAGE_CHECK_TIMEOUT)
+        if connected or time.monotonic() - last_status_write >= STATUS_WRITE_INTERVAL:
+            try:
+                update_status(host_id, connected)
+                last_status_write = time.monotonic()
+            except Exception as e:
+                log.error(f"Failed to update network status: {e}")
         if connected:
             if outage_id is not None:
                 try:
                     close_outage(outage_id)
-                    print(f"Internet restored, closed outage #{outage_id}")
+                    log.info(f"Internet restored, closed outage #{outage_id}")
                 except Exception as e:
-                    print(f"Failed to close outage: {e}")
-        else:
-            print("No internet connection (outage ongoing)")
+                    log.error(f"Failed to close outage: {e}")
+
+
+if __name__ == '__main__':
+    main()

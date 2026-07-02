@@ -3,5 +3,5 @@ CREATE TABLE IF NOT EXISTS network_status (
     last_connectivity_check  TIMESTAMP(0),
     is_connected             BOOLEAN NOT NULL DEFAULT FALSE,
     last_db_write            TIMESTAMP(0),
-    FOREIGN KEY (host_id) REFERENCES host(host_id)
+    CONSTRAINT network_status_host_id_fkey FOREIGN KEY (host_id) REFERENCES host(host_id) ON DELETE CASCADE
 );

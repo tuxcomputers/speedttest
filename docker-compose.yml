@@ -8,14 +8,25 @@ services:
       POSTGRES_USER: ${DB_USER:-speedtest}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-speedtest}
     ports:
+      # Published on all interfaces on purpose: other hosts sync to this
+      # container when it acts as the central server. start.sh generates a
+      # random password for it.
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   app:
     build: ./speedtest
     restart: unless-stopped
+    # init reaps the orphaned data_sync processes that speed_test.py
+    # fires off; without it they accumulate as zombies.
+    init: true
     environment:
       SQLITE_PATH: /data/speedtest.db
       HOST_HOSTNAME: ${HOST_HOSTNAME}
@@ -26,9 +37,15 @@ services:
       DB_NAME: ${DB_NAME:-}
       DB_USER: ${DB_USER:-}
       DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_SSLMODE: ${DB_SSLMODE:-prefer}
     volumes:
       - sqlite_data:/data
       - ./speedtest:/app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:

@@ -5,7 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-git pull
+# Don't let a dirty tree or offline remote block a deploy of existing code
+git pull --ff-only || echo "WARNING: git pull failed — continuing with the code already checked out."
 
 # ── Docker check ──────────────────────────────────────────────────────────────
 
@@ -104,6 +105,16 @@ if [[ "${FORCE_SERVER}" == true ]] || ! has_db_settings; then
         echo ""
 
         if [[ "${pg_choice}" == "l" ]]; then
+            # Keep an existing password — the Postgres volume was initialised
+            # with it and only honours POSTGRES_PASSWORD on first init.
+            db_password=$(grep '^DB_PASSWORD=' .env 2>/dev/null | head -n1 | cut -d= -f2- || true)
+            if [[ -n "${db_password}" ]]; then
+                echo "Reusing existing database password from .env."
+            else
+                db_password=$(openssl rand -hex 16 2>/dev/null \
+                    || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+                echo "Generated a random database password (stored in .env)."
+            fi
             sedi '/^DB_/d' .env
             sedi '/^COMPOSE_PROFILES/d' .env
             cat >> .env <<EOF
@@ -111,7 +122,8 @@ DB_HOST=db
 DB_PORT=5432
 DB_NAME=speedtest
 DB_USER=speedtest
-DB_PASSWORD=speedtest
+DB_PASSWORD=${db_password}
+DB_SSLMODE=prefer
 COMPOSE_PROFILES=local_db
 EOF
             echo "Local PostgreSQL container configured."
@@ -126,12 +138,19 @@ EOF
             read -p "Username:    " db_user
             read -s -p "Password:    " db_password
             echo ""
+            read -p "Require SSL/TLS? (server must have it enabled) [y/N]: " db_ssl
+            if [[ "${db_ssl}" =~ ^[Yy]$ ]]; then
+                db_sslmode=require
+            else
+                db_sslmode=prefer
+            fi
             cat >> .env <<EOF
 DB_HOST=${db_host}
 DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
 DB_PASSWORD=${db_password}
+DB_SSLMODE=${db_sslmode}
 COMPOSE_PROFILES=
 EOF
             echo "Remote PostgreSQL configured."
@@ -149,7 +168,8 @@ fi
 
 # ── Image rebuild check ───────────────────────────────────────────────────────
 
-hash_file="/tmp/speedttest-image.hash"
+# Repo-local so it survives reboots and doesn't collide across clones/users
+hash_file=".image.hash"
 if command -v md5sum &>/dev/null; then
     current_hash=$(cat speedtest/Dockerfile speedtest/requirements.txt | md5sum | cut -d' ' -f1)
 else
@@ -158,7 +178,7 @@ fi
 stored_hash=""
 [[ -f "${hash_file}" ]] && stored_hash=$(cat "${hash_file}")
 
-if [[ "${current_hash}" != "${stored_hash}" ]] || ! docker image inspect speedttest-app &>/dev/null; then
+if [[ "${current_hash}" != "${stored_hash}" ]] || [[ -z "$(docker compose images -q app 2>/dev/null)" ]]; then
     echo "Image out of date or missing — rebuilding..."
     docker compose up --build -d --remove-orphans
     echo "${current_hash}" > "${hash_file}"

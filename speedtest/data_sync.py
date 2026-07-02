@@ -1,6 +1,18 @@
+import fcntl
 import os
+
 import psycopg2
+from psycopg2 import errors as pg_errors
+
 import local_db
+from log_setup import get_logger
+
+log = get_logger('data_sync')
+
+# Settings owned by the central database: pulled from PostgreSQL and
+# overwritten locally on every sync. Local values are only pushed up when the
+# remote doesn't have the key yet (first server bootstrap).
+MANAGED_SETTINGS_WHERE = "setting LIKE 'ping_host_%' OR setting = 'speedtest_interval_min'"
 
 
 def has_db_config():
@@ -13,14 +25,37 @@ def get_pg_connection():
         port=os.environ.get('DB_PORT', 5432),
         dbname=os.environ['DB_NAME'],
         user=os.environ['DB_USER'],
-        password=os.environ['DB_PASSWORD']
+        password=os.environ['DB_PASSWORD'],
+        sslmode=os.environ.get('DB_SSLMODE', 'prefer'),
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+        options='-c statement_timeout=60000',
     )
+
+
+def acquire_sync_lock():
+    """Take an exclusive lock so overlapping sync processes (a slow sync
+    outliving the next 5-minute trigger) can't both push the same unsynced
+    rows. Returns the open lock file, or None if another sync holds it."""
+    lock_path = os.path.join(os.path.dirname(local_db.get_sqlite_path()) or '.', 'sync.lock')
+    lock_file = open(lock_path, 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        return None
+    return lock_file
 
 
 def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, host_hash):
     if not host_hash:
         raise ValueError("host_hash is required to resolve remote host")
 
+    # host_hash is the identity key; hostname is just a label and is allowed
+    # to collide between hosts.
     pg_cursor.execute("SELECT host_id, last_db_sync FROM host WHERE host_hash = %s", (host_hash,))
     row = pg_cursor.fetchone()
 
@@ -52,13 +87,50 @@ def resolve_pg_host(pg_cursor, sqlite_conn, local_host_id, hostname, timezone, h
     return pg_host_id, last_db_sync
 
 
+def mark_synced(sqlite_conn, table, id_column, row_id):
+    sqlite_conn.execute(
+        f"UPDATE {table} SET synced_at = datetime('now') WHERE {id_column} = ?",  # noqa: S608 — table/column are hardcoded
+        (row_id,)
+    )
+    sqlite_conn.commit()
+
+
+def sync_settings(sqlite_conn, cursor, pg_conn, pg_cursor):
+    pg_cursor.execute(f"SELECT setting, value FROM setting WHERE {MANAGED_SETTINGS_WHERE} ORDER BY setting")
+    remote = {row[0]: row[1] for row in pg_cursor.fetchall()}
+
+    cursor.execute(f"SELECT setting, value FROM setting WHERE {MANAGED_SETTINGS_WHERE} ORDER BY setting")
+    local = {row['setting']: row['value'] for row in cursor.fetchall()}
+
+    # Remote is the source of truth — pull changed values down.
+    changed = {k: v for k, v in remote.items() if local.get(k) != v}
+    for setting, value in changed.items():
+        sqlite_conn.execute(
+            "INSERT INTO setting (setting, value) VALUES (?, ?) ON CONFLICT (setting) DO UPDATE SET value = excluded.value",
+            (setting, value)
+        )
+    if changed:
+        sqlite_conn.commit()
+        log.info(f"Updated {len(changed)} setting(s) from remote DB: {', '.join(sorted(changed))}")
+
+    # Keys the remote doesn't know yet: push local defaults up.
+    missing = {k: v for k, v in local.items() if k not in remote}
+    for setting, value in missing.items():
+        pg_cursor.execute(
+            "INSERT INTO setting (setting, value) VALUES (%s, %s) ON CONFLICT (setting) DO NOTHING",
+            (setting, value)
+        )
+    if missing:
+        pg_conn.commit()
+
+
 def sync():
     sqlite_conn = local_db.get_connection()
 
     try:
         pg_conn = get_pg_connection()
     except Exception as e:
-        print(f"Cannot connect to PostgreSQL: {e}")
+        log.warning(f"Cannot connect to PostgreSQL: {e}")
         sqlite_conn.close()
         return
 
@@ -68,7 +140,7 @@ def sync():
         cursor.execute("SELECT host_id, hostname, timezone, host_hash FROM host LIMIT 1")
         row = cursor.fetchone()
         if not row:
-            print("No host record in local DB, nothing to sync")
+            log.info("No host record in local DB, nothing to sync")
             return
 
         local_host_id = row['host_id']
@@ -86,7 +158,7 @@ def sync():
             sqlite_conn.execute("UPDATE test SET synced_at = NULL")
             sqlite_conn.execute("UPDATE outage SET synced_at = NULL")
             sqlite_conn.commit()
-            print("First sync to this server — sending all records")
+            log.info("First sync to this server — sending all records")
 
         cursor.execute("SELECT * FROM test WHERE synced_at IS NULL")
         tests = cursor.fetchall()
@@ -97,17 +169,23 @@ def sync():
                 "SELECT test_id FROM test WHERE host_id = %s AND timestamp = %s",
                 (pg_host_id, t['timestamp'])
             )
-            existing = pg_cursor.fetchone()
-            if existing:
-                sqlite_conn.execute("UPDATE test SET synced_at = datetime('now') WHERE test_id = ?", (t['test_id'],))
-                sqlite_conn.commit()
+            if pg_cursor.fetchone():
+                mark_synced(sqlite_conn, 'test', 'test_id', t['test_id'])
                 skipped_tests += 1
                 continue
 
-            pg_cursor.execute(
-                "INSERT INTO test (host_id, timestamp, isp, packet_loss, result_id, result_url) VALUES (%s, %s, %s, %s, %s, %s) RETURNING test_id",
-                (pg_host_id, t['timestamp'], t['isp'], t['packet_loss'], t['result_id'], t['result_url'])
-            )
+            try:
+                pg_cursor.execute(
+                    "INSERT INTO test (host_id, timestamp, isp, packet_loss, result_id, result_url) VALUES (%s, %s, %s, %s, %s, %s) RETURNING test_id",
+                    (pg_host_id, t['timestamp'], t['isp'], t['packet_loss'], t['result_id'], t['result_url'])
+                )
+            except pg_errors.UniqueViolation:
+                # Backstop for a concurrent sync racing the SELECT above —
+                # the unique index on (host_id, timestamp) rejected the copy.
+                pg_conn.rollback()
+                mark_synced(sqlite_conn, 'test', 'test_id', t['test_id'])
+                skipped_tests += 1
+                continue
             pg_test_id = pg_cursor.fetchone()[0]
 
             c = sqlite_conn.cursor()
@@ -121,11 +199,11 @@ def sync():
                 )
 
             for tbl in ('download', 'upload'):
-                c.execute(f"SELECT * FROM {tbl} WHERE test_id = ?", (t['test_id'],))
+                c.execute(f"SELECT * FROM {tbl} WHERE test_id = ?", (t['test_id'],))  # noqa: S608
                 r = c.fetchone()
                 if r:
                     pg_cursor.execute(
-                        f"INSERT INTO {tbl} (test_id, bandwidth_mbps, bytes, elapsed, latency_iqm, latency_low, latency_high, latency_jitter) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        f"INSERT INTO {tbl} (test_id, bandwidth_mbps, bytes, elapsed, latency_iqm, latency_low, latency_high, latency_jitter) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",  # noqa: S608
                         (pg_test_id, r['bandwidth_mbps'], r['bytes'], r['elapsed'], r['latency_iqm'], r['latency_low'], r['latency_high'], r['latency_jitter'])
                     )
 
@@ -138,8 +216,7 @@ def sync():
                 )
 
             pg_conn.commit()
-            sqlite_conn.execute("UPDATE test SET synced_at = datetime('now') WHERE test_id = ?", (t['test_id'],))
-            sqlite_conn.commit()
+            mark_synced(sqlite_conn, 'test', 'test_id', t['test_id'])
 
         cursor.execute("SELECT * FROM outage WHERE synced_at IS NULL AND end_time IS NOT NULL")
         outages = cursor.fetchall()
@@ -151,56 +228,37 @@ def sync():
                 (pg_host_id, o['start_time'], o['end_time'])
             )
             if pg_cursor.fetchone():
-                sqlite_conn.execute("UPDATE outage SET synced_at = datetime('now') WHERE outage_id = ?", (o['outage_id'],))
-                sqlite_conn.commit()
+                mark_synced(sqlite_conn, 'outage', 'outage_id', o['outage_id'])
                 skipped_outages += 1
                 continue
 
-            pg_cursor.execute(
-                "INSERT INTO outage (host_id, start_time, end_time, status) VALUES (%s, %s, %s, %s)",
-                (pg_host_id, o['start_time'], o['end_time'], o['status'])
-            )
+            try:
+                pg_cursor.execute(
+                    "INSERT INTO outage (host_id, start_time, end_time, status) VALUES (%s, %s, %s, %s)",
+                    (pg_host_id, o['start_time'], o['end_time'], o['status'])
+                )
+            except pg_errors.UniqueViolation:
+                pg_conn.rollback()
+                mark_synced(sqlite_conn, 'outage', 'outage_id', o['outage_id'])
+                skipped_outages += 1
+                continue
             pg_conn.commit()
-            sqlite_conn.execute("UPDATE outage SET synced_at = datetime('now') WHERE outage_id = ?", (o['outage_id'],))
-            sqlite_conn.commit()
+            mark_synced(sqlite_conn, 'outage', 'outage_id', o['outage_id'])
 
         cursor.execute("SELECT * FROM network_status WHERE host_id = ?", (local_host_id,))
         ns = cursor.fetchone()
         if ns:
             pg_cursor.execute("""
                 INSERT INTO network_status (host_id, last_connectivity_check, is_connected, last_db_write)
-                VALUES (%s, %s, %s, NOW())
+                VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC')
                 ON CONFLICT (host_id) DO UPDATE SET
                     last_connectivity_check = EXCLUDED.last_connectivity_check,
                     is_connected = EXCLUDED.is_connected,
-                    last_db_write = NOW()
+                    last_db_write = NOW() AT TIME ZONE 'UTC'
             """, (pg_host_id, ns['last_connectivity_check'], bool(ns['is_connected'])))
             pg_conn.commit()
 
-        # Ping hosts: remote is source of truth — pull from PG and overwrite local if different.
-        # If PG has none yet, push local defaults up.
-        pg_cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%' ORDER BY setting")
-        pg_ping_hosts = {row[0]: row[1] for row in pg_cursor.fetchall()}
-
-        if pg_ping_hosts:
-            cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%' ORDER BY setting")
-            local_ping_hosts = {row['setting']: row['value'] for row in cursor.fetchall()}
-            if pg_ping_hosts != local_ping_hosts:
-                for setting, value in pg_ping_hosts.items():
-                    sqlite_conn.execute(
-                        "INSERT INTO setting (setting, value) VALUES (?, ?) ON CONFLICT (setting) DO UPDATE SET value = excluded.value",
-                        (setting, value)
-                    )
-                sqlite_conn.commit()
-                print(f"Updated {len(pg_ping_hosts)} ping host(s) from remote DB")
-        else:
-            cursor.execute("SELECT setting, value FROM setting WHERE setting LIKE 'ping_host_%'")
-            for row in cursor.fetchall():
-                pg_cursor.execute(
-                    "INSERT INTO setting (setting, value) VALUES (%s, %s) ON CONFLICT (setting) DO UPDATE SET value = EXCLUDED.value",
-                    (row['setting'], row['value'])
-                )
-            pg_conn.commit()
+        sync_settings(sqlite_conn, cursor, pg_conn, pg_cursor)
 
         pg_cursor.execute(
             "UPDATE host SET last_db_sync = NOW() AT TIME ZONE 'UTC' WHERE host_id = %s",
@@ -210,19 +268,32 @@ def sync():
 
         new_tests = len(tests) - skipped_tests
         new_outages = len(outages) - skipped_outages
-        print(f"Synced {new_tests} test(s), {new_outages} outage(s) — skipped {skipped_tests} duplicate test(s), {skipped_outages} duplicate outage(s)")
+        log.info(f"Synced {new_tests} test(s), {new_outages} outage(s) — skipped {skipped_tests} duplicate test(s), {skipped_outages} duplicate outage(s)")
 
     finally:
         sqlite_conn.close()
         pg_conn.close()
 
 
-local_db.init_db()
+def main():
+    local_db.init_db()
 
-if not has_db_config():
-    print("No DB configuration, skipping sync")
-else:
+    if not has_db_config():
+        log.info("No DB configuration, skipping sync")
+        return
+
+    lock = acquire_sync_lock()
+    if lock is None:
+        log.info("Another sync is already running — skipping")
+        return
+
     try:
         sync()
     except Exception as e:
-        print(f"Sync failed: {e}")
+        log.error(f"Sync failed: {e}")
+    finally:
+        lock.close()
+
+
+if __name__ == '__main__':
+    main()

@@ -5,5 +5,5 @@ CREATE TABLE IF NOT EXISTS ping (
     jitter REAL,
     low REAL,
     high REAL,
-    FOREIGN KEY (test_id) REFERENCES test(test_id)
+    CONSTRAINT ping_test_id_fkey FOREIGN KEY (test_id) REFERENCES test(test_id) ON DELETE CASCADE
 );

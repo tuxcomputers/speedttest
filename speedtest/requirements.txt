@@ -1,2 +1,2 @@
-psycopg2-binary
-tzlocal
+psycopg2-binary==2.9.12
+tzlocal==5.3.1

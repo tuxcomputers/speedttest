@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS server (
     location TEXT,
     country TEXT,
     ip TEXT,
-    FOREIGN KEY (test_id) REFERENCES test(test_id)
+    CONSTRAINT server_test_id_fkey FOREIGN KEY (test_id) REFERENCES test(test_id) ON DELETE CASCADE
 );

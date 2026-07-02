@@ -1,6 +1,11 @@
-import subprocess
 import json
+import subprocess
+import sys
+
 import local_db
+from log_setup import get_logger
+
+log = get_logger('speed_test')
 
 
 def run_speedtest():
@@ -35,7 +40,7 @@ def save_results(data, host_id):
     for table, section in [('download', data['download']), ('upload', data['upload'])]:
         lat = section['latency']
         cursor.execute(
-            f'INSERT INTO {table} (test_id, bandwidth_mbps, bytes, elapsed, latency_iqm, latency_low, latency_high, latency_jitter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            f'INSERT INTO {table} (test_id, bandwidth_mbps, bytes, elapsed, latency_iqm, latency_low, latency_high, latency_jitter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',  # noqa: S608
             (test_id, round(section['bandwidth'] * 8 / 1e6, 2), section['bytes'], section['elapsed'],
              lat['iqm'], lat['low'], lat['high'], lat['jitter'])
         )
@@ -51,14 +56,20 @@ def save_results(data, host_id):
     return test_id
 
 
-local_db.init_db()
-host_id = local_db.get_or_create_host()
+def main():
+    local_db.init_db()
+    host_id = local_db.get_or_create_host()
 
-try:
-    data = run_speedtest()
-    test_id = save_results(data, host_id)
-    print(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
-except Exception as e:
-    print(f"Test failed: {e}")
+    try:
+        data = run_speedtest()
+        test_id = save_results(data, host_id)
+        log.info(f"Saved test #{test_id}: {data['download']['bandwidth'] * 8 / 1e6:.2f} Mbps down, {data['upload']['bandwidth'] * 8 / 1e6:.2f} Mbps up")
+    except Exception as e:
+        log.error(f"Test failed: {e}")
 
-subprocess.Popen(['python', 'data_sync.py'])
+    # Fire-and-forget: the orphaned process is reaped by the container's init.
+    subprocess.Popen([sys.executable, 'data_sync.py'])
+
+
+if __name__ == '__main__':
+    main()

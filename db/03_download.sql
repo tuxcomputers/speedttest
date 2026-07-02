@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS download (
     latency_low REAL,
     latency_high REAL,
     latency_jitter REAL,
-    FOREIGN KEY (test_id) REFERENCES test(test_id)
+    CONSTRAINT download_test_id_fkey FOREIGN KEY (test_id) REFERENCES test(test_id) ON DELETE CASCADE
 );

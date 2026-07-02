@@ -1,0 +1,3 @@
+-r speedtest/requirements.txt
+pytest~=8.3
+ruff~=0.9
