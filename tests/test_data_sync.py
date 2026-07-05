@@ -162,6 +162,19 @@ def test_settings_pull_from_remote(pg_env):
     assert local['ping_host_1'] == '4.2.2.4'
 
 
+def test_prune_remote_rules_only_after_first_sync(pg_env):
+    # Before the first sync to this server the host has no last_db_sync there,
+    # so prune must not trust synced_at markers (they may be from an old
+    # server). After a successful sync it may.
+    import data_sync
+    import prune
+
+    seed_local_test()
+    assert prune.remote_sync_established() is False
+    data_sync.sync()
+    assert prune.remote_sync_established() is True
+
+
 def test_network_status_last_db_write_is_utc(pg_env):
     import data_sync
     from datetime import datetime, timezone

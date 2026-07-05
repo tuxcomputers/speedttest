@@ -36,8 +36,7 @@ def remaining_ids(conn, table, id_col):
     return {r[0] for r in conn.execute(f"SELECT {id_col} FROM {table}").fetchall()}  # noqa: S608
 
 
-def test_remote_mode_prunes_synced_after_remote_days(sqlite_env, monkeypatch):
-    monkeypatch.setenv('DB_HOST', 'somewhere')
+def test_remote_mode_prunes_synced_after_remote_days(sqlite_env):
     local_db.init_db()
     host_id = local_db.get_or_create_host()
     conn = local_db.get_connection()
@@ -48,7 +47,7 @@ def test_remote_mode_prunes_synced_after_remote_days(sqlite_env, monkeypatch):
     unsynced_ancient = seed_test(conn, host_id, 366, synced=False)  # pruned: past ceiling
     conn.commit()
 
-    prune.prune()
+    prune.prune(has_remote=True)
 
     remaining = remaining_ids(conn, 'test', 'test_id')
     assert remaining == {synced_fresh, unsynced_old}
@@ -58,10 +57,9 @@ def test_remote_mode_prunes_synced_after_remote_days(sqlite_env, monkeypatch):
     conn.close()
 
 
-def test_offline_host_never_prunes_before_ceiling(sqlite_env, monkeypatch):
+def test_offline_host_never_prunes_before_ceiling(sqlite_env):
     # The user's scenario: remote configured, but nothing has synced for 31+
     # days — nothing may be pruned until the 365-day ceiling.
-    monkeypatch.setenv('DB_HOST', 'somewhere')
     local_db.init_db()
     host_id = local_db.get_or_create_host()
     conn = local_db.get_connection()
@@ -70,7 +68,7 @@ def test_offline_host_never_prunes_before_ceiling(sqlite_env, monkeypatch):
         seed_test(conn, host_id, days, synced=False)
     conn.commit()
 
-    prune.prune()
+    prune.prune(has_remote=True)
 
     assert len(remaining_ids(conn, 'test', 'test_id')) == 3
     conn.close()
@@ -94,8 +92,7 @@ def test_local_only_mode_uses_ceiling_only(sqlite_env):
     conn.close()
 
 
-def test_outage_pruning_never_touches_open_outages(sqlite_env, monkeypatch):
-    monkeypatch.setenv('DB_HOST', 'somewhere')
+def test_outage_pruning_never_touches_open_outages(sqlite_env):
     local_db.init_db()
     host_id = local_db.get_or_create_host()
     conn = local_db.get_connection()
@@ -105,7 +102,7 @@ def test_outage_pruning_never_touches_open_outages(sqlite_env, monkeypatch):
     closed_unsynced = seed_outage(conn, host_id, 31, synced=False)                # kept: unsynced
     conn.commit()
 
-    prune.prune()
+    prune.prune(has_remote=True)
 
     remaining = remaining_ids(conn, 'outage', 'outage_id')
     assert remaining == {still_open, closed_unsynced}
@@ -113,8 +110,7 @@ def test_outage_pruning_never_touches_open_outages(sqlite_env, monkeypatch):
     conn.close()
 
 
-def test_retention_settings_are_respected(sqlite_env, monkeypatch):
-    monkeypatch.setenv('DB_HOST', 'somewhere')
+def test_retention_settings_are_respected(sqlite_env):
     local_db.init_db()
     host_id = local_db.get_or_create_host()
     conn = local_db.get_connection()
@@ -124,7 +120,7 @@ def test_retention_settings_are_respected(sqlite_env, monkeypatch):
     kept = seed_test(conn, host_id, 4, synced=True)
     conn.commit()
 
-    prune.prune()
+    prune.prune(has_remote=True)
 
     remaining = remaining_ids(conn, 'test', 'test_id')
     assert remaining == {kept}
@@ -141,8 +137,7 @@ def test_defaults_seeded(sqlite_env):
     assert settings['prune_remote_days'] == '30'
 
 
-def test_invalid_setting_falls_back_to_default(sqlite_env, monkeypatch):
-    monkeypatch.setenv('DB_HOST', 'somewhere')
+def test_invalid_setting_falls_back_to_default(sqlite_env):
     local_db.init_db()
     host_id = local_db.get_or_create_host()
     conn = local_db.get_connection()
@@ -152,9 +147,30 @@ def test_invalid_setting_falls_back_to_default(sqlite_env, monkeypatch):
     pruned = seed_test(conn, host_id, 31, synced=True)  # past default 30d
     conn.commit()
 
-    prune.prune()
+    prune.prune(has_remote=True)
 
     remaining = remaining_ids(conn, 'test', 'test_id')
     assert remaining == {kept}
     assert pruned not in remaining
+    conn.close()
+
+
+def test_stale_markers_from_previous_server_are_not_pruned(sqlite_env, monkeypatch):
+    # Server-migration scenario: rows are marked synced_at from the OLD
+    # server, and the new server is configured but has no sync relationship
+    # yet (or is unreachable). Pruning must fall back to the ceiling so the
+    # full history survives to be replayed to the new server.
+    monkeypatch.setenv('DB_HOST', 'db.invalid')
+    local_db.init_db()
+    host_id = local_db.get_or_create_host()
+    conn = local_db.get_connection()
+
+    for days in (31, 100, 364):
+        seed_test(conn, host_id, days, synced=True)  # synced to the OLD server
+    conn.commit()
+
+    assert prune.remote_sync_established() is False
+    prune.prune()  # auto-detect: must choose local-only retention
+
+    assert len(remaining_ids(conn, 'test', 'test_id')) == 3
     conn.close()

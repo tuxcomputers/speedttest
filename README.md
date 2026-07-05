@@ -73,6 +73,8 @@ The local SQLite database is pruned daily so it can't grow without bound. Two re
 
 The safety property is that sync state is checked per row: a row is only eligible for the 30-day prune once its `synced_at` marker is set. A host that loses contact with the remote server therefore prunes **nothing** past day 30 — its unsynced history keeps accumulating until it reaches the 365-day ceiling, at which point it is pruned exactly as on a local-only host. Open outages are never pruned regardless of age. After an unusually large prune (first run on an old database) a `VACUUM` reclaims the file space.
 
+Additionally, the 30-day rule is only used once the host has an **established sync relationship with the current server** (its `last_db_sync` is set there, verified at prune time). On any connection problem — or right after migrating to a new central server, when `synced_at` markers still refer to the old one — pruning falls back to the 365-day ceiling, so the full history survives to be replayed to the new server.
+
 ### Multi-host support
 
 Each host is identified by a SHA-256 hash of its MAC address (first 16 characters), stored as `host_hash`. This identity survives OS reinstalls. The hash is captured by `start.sh` on the host and passed in via `.env` — it is never derived inside the container (the container's own MAC is Docker-assigned and unstable). When a host first connects to PostgreSQL it registers itself (or finds its existing record) by `host_hash`, keeping its local `remote_id` in sync. All data is written to PostgreSQL under the correct `host_id` automatically.

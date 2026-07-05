@@ -1,5 +1,6 @@
 import os
 
+import data_sync
 import local_db
 from log_setup import get_logger
 
@@ -34,11 +35,41 @@ def build_age_filter(column, local_days, remote_days, has_remote):
     return where, params
 
 
-def prune():
+def remote_sync_established():
+    """The remote retention rule may only be used when this host has an
+    established sync relationship with the CURRENT remote (its last_db_sync
+    is set there). synced_at markers can be stale — after migrating to a new
+    server they still refer to the old one, and trusting them would prune
+    history before the first full sync replays it. Any doubt (no config,
+    connection problems, host unknown remotely) falls back to local-only
+    retention."""
+    if not os.environ.get('DB_HOST'):
+        return False
+    try:
+        conn = local_db.get_connection()
+        row = conn.execute("SELECT host_hash FROM host LIMIT 1").fetchone()
+        conn.close()
+        if not row or not row['host_hash']:
+            return False
+        pg_conn = data_sync.get_pg_connection()
+        try:
+            cursor = pg_conn.cursor()
+            cursor.execute("SELECT last_db_sync FROM host WHERE host_hash = %s", (row['host_hash'],))
+            r = cursor.fetchone()
+            return bool(r and r[0])
+        finally:
+            pg_conn.close()
+    except Exception as e:
+        log.warning(f"Cannot verify sync state on the remote ({e}) — using local-only retention")
+        return False
+
+
+def prune(has_remote=None):
+    if has_remote is None:
+        has_remote = remote_sync_established()
     conn = local_db.get_connection()
     local_days = get_retention_days(conn, 'prune_local_days', DEFAULT_LOCAL_DAYS)
     remote_days = get_retention_days(conn, 'prune_remote_days', DEFAULT_REMOTE_DAYS)
-    has_remote = bool(os.environ.get('DB_HOST'))
 
     test_where, test_params = build_age_filter('timestamp', local_days, remote_days, has_remote)
     # Delete children explicitly — local databases created before the schema
