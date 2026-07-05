@@ -173,6 +173,55 @@ fi
 # and `docker compose down -v`.
 project_name=$(basename "${SCRIPT_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
 
+repo_fstype() {
+    # Docker Desktop (macOS) virtualises bind mounts, so the host fs doesn't matter
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "apfs"
+        return
+    fi
+    local t=""
+    t=$(df --output=fstype "${SCRIPT_DIR}" 2>/dev/null | tail -n1 | tr -d '[:space:]') || t=""
+    if [[ -z "${t}" ]]; then
+        t=$(stat -f -c %T "${SCRIPT_DIR}" 2>/dev/null) || t="unknown"
+    fi
+    echo "${t:-unknown}"
+}
+
+# PostgreSQL requires POSIX ownership/permissions on its data directory, which
+# exFAT/FAT/NTFS and most network shares can't provide — catch that before
+# mounting ./database and leaving the db container in a crash loop.
+fstype=$(repo_fstype)
+case "${fstype}" in
+    exfat|vfat|msdos|ntfs*|fuseblk)
+        if grep -q '^COMPOSE_PROFILES=.*local_db' .env 2>/dev/null; then
+            echo ""
+            echo "ERROR: This repository is on an '${fstype}' filesystem (${SCRIPT_DIR})."
+            echo "PostgreSQL cannot store its data here — it needs POSIX ownership and"
+            echo "permissions, so the db container would fail to start with its data in"
+            echo "./database."
+            echo ""
+            echo "Move the repository to a native Linux filesystem (e.g. ext4) and run"
+            echo "start.sh again — keep the directory name the same so existing Docker"
+            echo "volumes are still found and migrated:"
+            echo ""
+            echo "  mv \"${SCRIPT_DIR}\" ~/$(basename "${SCRIPT_DIR}")"
+            echo "  cd ~/$(basename "${SCRIPT_DIR}")"
+            echo "  ./start.sh"
+            echo ""
+            echo "(Check the target first with: df -T ~)"
+            exit 1
+        else
+            echo "WARNING: This repository is on an '${fstype}' filesystem. SQLite in"
+            echo "./data works here, but don't host the PostgreSQL server on this path."
+        fi
+        ;;
+    cifs|smb*|nfs*)
+        echo "WARNING: This repository is on a network filesystem ('${fstype}')."
+        echo "SQLite locking is unreliable over network mounts — data in ./data may"
+        echo "corrupt. Move the repository to a local disk."
+        ;;
+esac
+
 # One-time migration for deployments that started on the old named volumes
 migrate_volume() {
     local old_volume="${project_name}_$1" target_dir="$2" service="$3"

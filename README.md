@@ -170,6 +170,8 @@ Answering `n` to the first question runs in SQLite-only mode with no sync.
 
 **Data location:** all persistent data lives in gitignored bind-mount directories, so it survives image rebuilds, container recreation, and even `docker compose down -v`. The agent's SQLite database is in `./data` (every host); the local PostgreSQL container's data is in `./database` (server hosts only). To back either up, stop the relevant container and copy the directory. Deployments that started on the old `sqlite_data`/`pgdata` named volumes are migrated automatically by `start.sh` the first time it runs after this change.
 
+**Filesystem requirement:** PostgreSQL needs POSIX ownership/permissions on its data directory, which exFAT/FAT/NTFS and network shares can't provide. `start.sh` checks the repo's filesystem before starting: on a server host (local PostgreSQL) an unsuitable filesystem is a hard error with instructions to move the repo to a native Linux filesystem (e.g. ext4); on agent-only hosts it's a warning (SQLite works on exFAT, but network mounts risk corruption).
+
 ### Schema migrations
 
 Fresh databases get the current schema automatically from `db/schema/*.sql`. When a schema change lands in `db/migrations/`, apply it to an existing database with:
