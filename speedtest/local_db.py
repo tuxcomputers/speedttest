@@ -10,7 +10,7 @@ log = get_logger('local_db')
 
 # Bump when the local schema changes; init_db() applies everything below the
 # stored version idempotently, then fast-paths on subsequent runs.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 BASE_SCHEMA = """
     CREATE TABLE IF NOT EXISTS host (
@@ -144,6 +144,8 @@ def init_db():
             ('ping_host_3', '9.9.9.9'),
             ('ping_host_4', '208.67.222.222'),
             ('speedtest_interval_min', '5'),
+            ('prune_local_days', '365'),
+            ('prune_remote_days', '30'),
         ]
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

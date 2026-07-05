@@ -48,7 +48,7 @@ The sync pushes:
 
 Only one sync process runs at a time — a lock file prevents a slow sync from overlapping with the next scheduled one. Connections to PostgreSQL use a 10-second connect timeout, TCP keepalives, and a 60-second statement timeout so a flaky network can't hang a sync forever. Set `DB_SSLMODE=require` in `.env` to force TLS to the server (default `prefer`).
 
-**Remote-managed settings** (`ping_host_1`–`ping_host_4`, `speedtest_interval_min`) are pulled from the remote database on every sync — the remote is the source of truth; change them once in PostgreSQL and all connected hosts pick up the new values. On first connection, local defaults are pushed up if the remote has none yet.
+**Remote-managed settings** (`ping_host_1`–`ping_host_4`, `speedtest_interval_min`, `prune_local_days`, `prune_remote_days`) are pulled from the remote database on every sync — the remote is the source of truth; change them once in PostgreSQL and all connected hosts pick up the new values. On first connection, local defaults are pushed up if the remote has none yet.
 
 **`last_db_sync`** is recorded on the PostgreSQL `host` record at the end of every successful sync. This is the authoritative sync timestamp — always read from the remote. If it is NULL (new server or first run) all local records are queued for sync regardless of their local sync state, and the duplicate detection ensures nothing is inserted twice.
 
@@ -61,6 +61,17 @@ WHERE last_db_sync IS NULL
    OR last_db_sync < NOW() AT TIME ZONE 'UTC' - INTERVAL '30 minutes'
 ORDER BY last_db_sync NULLS FIRST;
 ```
+
+### Local pruning
+
+The local SQLite database is pruned daily so it can't grow without bound. Two retention settings control it, both managed centrally in PostgreSQL like the other settings:
+
+| Setting | Default | Applies to |
+|---|---|---|
+| `prune_remote_days` | 30 | Rows that have **already been synced** to the remote database |
+| `prune_local_days` | 365 | Everything else — the hard ceiling, and the only rule on hosts with no remote configured |
+
+The safety property is that sync state is checked per row: a row is only eligible for the 30-day prune once its `synced_at` marker is set. A host that loses contact with the remote server therefore prunes **nothing** past day 30 — its unsynced history keeps accumulating until it reaches the 365-day ceiling, at which point it is pruned exactly as on a local-only host. Open outages are never pruned regardless of age. After an unusually large prune (first run on an old database) a `VACUUM` reclaims the file space.
 
 ### Multi-host support
 
@@ -83,7 +94,8 @@ Host (Pi / tower / etc.)
     └── supervisor.py
         ├── → speed_test.py             (every 5 min — skipped if outage open)
         │       └── → data_sync.py      (triggered on completion, lock-protected)
-        └── → connectivity_monitor.py   (every 10s / rapid loop during outage)
+        ├── → connectivity_monitor.py   (every 10s / rapid loop during outage)
+        └── → prune.py                  (daily — applies local retention rules)
 
 Central PostgreSQL
 ├── host  (includes last_db_sync)
@@ -246,7 +258,7 @@ One row per host — current connectivity state and timestamps for the last chec
 `(host_id, start_time, end_time)` is unique.
 
 ### `setting`
-Key/value store. `ping_host_1` through `ping_host_4` control which DNS servers are used for connectivity checks; `speedtest_interval_min` controls the speed test interval. Managed centrally in PostgreSQL — the remote value overwrites local on every sync.
+Key/value store. `ping_host_1` through `ping_host_4` control which DNS servers are used for connectivity checks; `speedtest_interval_min` controls the speed test interval; `prune_local_days` / `prune_remote_days` control local data retention. Managed centrally in PostgreSQL — the remote value overwrites local on every sync.
 
 ### `schema_migration`
 Migrations applied by `db/migrate.sh`, by filename.

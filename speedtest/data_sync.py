@@ -12,7 +12,10 @@ log = get_logger('data_sync')
 # Settings owned by the central database: pulled from PostgreSQL and
 # overwritten locally on every sync. Local values are only pushed up when the
 # remote doesn't have the key yet (first server bootstrap).
-MANAGED_SETTINGS_WHERE = "setting LIKE 'ping_host_%' OR setting = 'speedtest_interval_min'"
+MANAGED_SETTINGS_WHERE = (
+    "setting LIKE 'ping_host_%' "
+    "OR setting IN ('speedtest_interval_min', 'prune_local_days', 'prune_remote_days')"
+)
 
 
 def has_db_config():

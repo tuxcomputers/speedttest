@@ -10,6 +10,7 @@ log = get_logger('supervisor')
 
 DEFAULT_SPEEDTEST_INTERVAL = 5 * 60
 CONNECTIVITY_INTERVAL = 10
+PRUNE_INTERVAL = 24 * 60 * 60
 
 
 def get_speedtest_interval():
@@ -55,10 +56,11 @@ def outage_active():
 def main():
     local_db.init_db()
 
-    processes = {'speedtest': None, 'connectivity': None, 'sync': None}
+    processes = {'speedtest': None, 'connectivity': None, 'sync': None, 'prune': None}
 
     next_speedtest = next_aligned(get_speedtest_interval())
     next_connectivity = time.time()
+    next_prune = time.time() + 60  # first prune shortly after startup, then daily
 
     while True:
         # Reap any finished children so they don't linger as zombies.
@@ -85,7 +87,11 @@ def main():
                 processes['speedtest'] = spawn('speed_test.py')
             next_speedtest = next_aligned(interval)
 
-        next_event = min(next_connectivity, next_speedtest)
+        if now >= next_prune and not is_running(processes['prune']):
+            processes['prune'] = spawn('prune.py')
+            next_prune = now + PRUNE_INTERVAL
+
+        next_event = min(next_connectivity, next_speedtest, next_prune)
         time.sleep(max(0.1, next_event - time.time()))
 
 
