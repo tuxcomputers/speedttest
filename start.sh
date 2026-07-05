@@ -225,13 +225,22 @@ esac
 # One-time migration for deployments that started on the old named volumes
 migrate_volume() {
     local old_volume="${project_name}_$1" target_dir="$2" service="$3"
-    if [[ -z "$(ls -A "${target_dir}" 2>/dev/null)" ]] && docker volume inspect "${old_volume}" &>/dev/null; then
-        echo "Migrating data from the '${old_volume}' volume to ./${target_dir}..."
-        docker compose stop "${service}" &>/dev/null || true
-        docker run --rm -v "${old_volume}:/from" -v "${SCRIPT_DIR}/${target_dir}:/to" alpine sh -c 'cp -a /from/. /to/'
-        echo "Migration complete. Once you've confirmed everything works, remove the old volume with:"
-        echo "  docker volume rm ${old_volume}"
+    if [[ -n "$(ls -A "${target_dir}" 2>/dev/null)" ]]; then
+        return 0  # target already has data — nothing to migrate
     fi
+    if ! docker volume inspect "${old_volume}" &>/dev/null; then
+        # Don't fail — fresh installs have no volume — but say so loudly, so a
+        # renamed project/directory doesn't silently strand the old data.
+        echo "NOTE: ./${target_dir} is empty and no '${old_volume}' volume exists to migrate."
+        echo "      Fine for a fresh install. If this host has existing data, check for it with:"
+        echo "        docker volume ls"
+        return 0
+    fi
+    echo "Migrating data from the '${old_volume}' volume to ./${target_dir}..."
+    docker compose stop "${service}" &>/dev/null || true
+    docker run --rm -v "${old_volume}:/from" -v "${SCRIPT_DIR}/${target_dir}:/to" alpine sh -c 'cp -a /from/. /to/'
+    echo "Migration complete. Once you've confirmed everything works, remove the old volume with:"
+    echo "  docker volume rm ${old_volume}"
 }
 
 mkdir -p data

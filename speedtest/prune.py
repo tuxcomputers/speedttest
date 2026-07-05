@@ -90,7 +90,10 @@ def prune(has_remote=None):
 
     conn.commit()
 
-    mode = f"synced after {remote_days}d, unsynced ceiling {local_days}d" if has_remote else f"local-only, {local_days}d"
+    if has_remote:
+        mode = f"synced after {remote_days}d, unsynced ceiling {local_days}d"
+    else:
+        mode = f"ceiling {local_days}d only — no remote configured or no completed sync to it yet"
     log.info(f"Pruned {tests_deleted} test(s), {outages_deleted} outage(s) ({mode})")
 
     if tests_deleted + outages_deleted >= VACUUM_THRESHOLD:
