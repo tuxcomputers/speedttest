@@ -5,7 +5,7 @@
 # schema_migration table so each file runs exactly once.
 #
 # Uses the DB_* settings from .env. Run this once after pulling schema
-# changes — fresh databases (initialised from db/*.sql) don't need it, but
+# changes — fresh databases (initialised from db/schema/*.sql) don't need it, but
 # running it anyway is harmless.
 
 set -euo pipefail

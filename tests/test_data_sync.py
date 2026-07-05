@@ -36,7 +36,7 @@ def pg_env(sqlite_env, monkeypatch):
     # Clean slate, then apply the schema exactly as docker-entrypoint-initdb.d
     # would, followed by the migration (verifying it is fresh-DB safe).
     cursor.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
-    for path in sorted(glob.glob(os.path.join(REPO_ROOT, 'db', '*.sql'))):
+    for path in sorted(glob.glob(os.path.join(REPO_ROOT, 'db', 'schema', '*.sql'))):
         with open(path) as f:
             cursor.execute(f.read())
     for path in sorted(glob.glob(os.path.join(REPO_ROOT, 'db', 'migrations', '*.sql'))):

@@ -13,8 +13,12 @@ services:
       # random password for it.
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db:/docker-entrypoint-initdb.d
+      # Bind mount (not a named volume) so the data survives image rebuilds,
+      # `docker compose down -v`, and is easy to back up
+      - ./database:/var/lib/postgresql/data
+      # Only the schema dir — the postgres entrypoint executes any *.sh it
+      # finds in initdb.d, so migrate.sh must not be visible here
+      - ./db/schema:/docker-entrypoint-initdb.d
     logging:
       driver: json-file
       options:
@@ -39,14 +43,12 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_SSLMODE: ${DB_SSLMODE:-prefer}
     volumes:
-      - sqlite_data:/data
+      # Bind mount for the same reason as ./database: survives rebuilds and
+      # `docker compose down -v`, and backs up as a plain file copy
+      - ./data:/data
       - ./speedtest:/app
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  pgdata:
-  sqlite_data:

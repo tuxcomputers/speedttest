@@ -166,6 +166,33 @@ EOF
     fi
 fi
 
+# ── Data directories ──────────────────────────────────────────────────────────
+
+# Container data lives in gitignored bind mounts (./data for the agent's
+# SQLite, ./database for local PostgreSQL) so it survives image rebuilds
+# and `docker compose down -v`.
+project_name=$(basename "${SCRIPT_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+
+# One-time migration for deployments that started on the old named volumes
+migrate_volume() {
+    local old_volume="${project_name}_$1" target_dir="$2" service="$3"
+    if [[ -z "$(ls -A "${target_dir}" 2>/dev/null)" ]] && docker volume inspect "${old_volume}" &>/dev/null; then
+        echo "Migrating data from the '${old_volume}' volume to ./${target_dir}..."
+        docker compose stop "${service}" &>/dev/null || true
+        docker run --rm -v "${old_volume}:/from" -v "${SCRIPT_DIR}/${target_dir}:/to" alpine sh -c 'cp -a /from/. /to/'
+        echo "Migration complete. Once you've confirmed everything works, remove the old volume with:"
+        echo "  docker volume rm ${old_volume}"
+    fi
+}
+
+mkdir -p data
+migrate_volume sqlite_data data app
+
+if grep -q '^COMPOSE_PROFILES=.*local_db' .env 2>/dev/null; then
+    mkdir -p database
+    migrate_volume pgdata database db
+fi
+
 # ── Image rebuild check ───────────────────────────────────────────────────────
 
 # Repo-local so it survives reboots and doesn't collide across clones/users

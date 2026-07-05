@@ -101,9 +101,12 @@ speedttest/
 ├── docker-compose.yml   # orchestrates the app + db services
 ├── start.sh             # bootstrap / deploy script
 ├── speedtest/           # the host agent — supervisor + scripts
-├── db/                  # PostgreSQL schema (mounted as docker-entrypoint-initdb.d)
+├── db/
+│   ├── schema/          # PostgreSQL schema (mounted as docker-entrypoint-initdb.d)
 │   ├── migrations/      # schema migrations for existing databases
 │   └── migrate.sh       # applies pending migrations
+├── data/                # the agent's SQLite data (gitignored, created by start.sh)
+├── database/            # local PostgreSQL data (gitignored, created by start.sh)
 ├── tests/               # pytest suite (SQLite unit tests + PG integration tests)
 └── gui/                 # front-end (not yet built)
 ```
@@ -157,7 +160,7 @@ Choice:
 
 | Choice | Effect |
 |---|---|
-| `l` | Starts a PostgreSQL 16 container on the same host, accessible on port 5432 so other hosts can sync to it. A random password is generated and stored in `.env` |
+| `l` | Starts a PostgreSQL 16 container on the same host, accessible on port 5432 so other hosts can sync to it. A random password is generated and stored in `.env`. Data is stored in `./database` |
 | `r` | Connects to an existing PostgreSQL server; prompts for host, port, database, user, password, and whether to require SSL/TLS |
 | `e` or anything else | Exits the script |
 
@@ -165,9 +168,11 @@ Answering `n` to the first question runs in SQLite-only mode with no sync.
 
 **Security notes:** the local container's port 5432 is published on all interfaces so that other monitored hosts can reach it — keep it behind your firewall/NAT. When syncing across untrusted networks, enable SSL on the server and set `DB_SSLMODE=require`. DB credentials live only in `.env` (never committed, never copied into SQLite).
 
+**Data location:** all persistent data lives in gitignored bind-mount directories, so it survives image rebuilds, container recreation, and even `docker compose down -v`. The agent's SQLite database is in `./data` (every host); the local PostgreSQL container's data is in `./database` (server hosts only). To back either up, stop the relevant container and copy the directory. Deployments that started on the old `sqlite_data`/`pgdata` named volumes are migrated automatically by `start.sh` the first time it runs after this change.
+
 ### Schema migrations
 
-Fresh databases get the current schema automatically from `db/*.sql`. When a schema change lands in `db/migrations/`, apply it to an existing database with:
+Fresh databases get the current schema automatically from `db/schema/*.sql`. When a schema change lands in `db/migrations/`, apply it to an existing database with:
 
 ```bash
 ./db/migrate.sh
